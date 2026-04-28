@@ -1,5 +1,6 @@
 (() => {
   const READY_CLASS = "ytdlpgrab-ready";
+  const MIN_DRAG_SAVE_MS = 500;
   let activeDrag = null;
   let pendingPointerAnchor = null;
   const THUMBNAIL_CONTAINER_SELECTOR = [
@@ -275,8 +276,31 @@
 
     activeDrag = {
       videoUrl,
-      name
+      name,
+      startedAt: Date.now(),
+      leftDocument: false
     };
+  }
+
+  function trackDragLocation(event) {
+    if (!activeDrag) {
+      return;
+    }
+
+    const outsideViewport =
+      event.clientX <= 0 ||
+      event.clientY <= 0 ||
+      event.clientX >= window.innerWidth ||
+      event.clientY >= window.innerHeight;
+
+    if (outsideViewport || (event.type === "dragleave" && event.relatedTarget === null)) {
+      activeDrag.leftDocument = true;
+      return;
+    }
+
+    if (event.type === "dragover") {
+      activeDrag.leftDocument = false;
+    }
   }
 
   function finishDrag(event) {
@@ -287,7 +311,11 @@
     const drag = activeDrag;
     activeDrag = null;
 
-    if (event.dataTransfer?.dropEffect === "none") {
+    const elapsedMs = Date.now() - drag.startedAt;
+    if (
+      event.dataTransfer?.dropEffect === "none" &&
+      (!drag.leftDocument || elapsedMs < MIN_DRAG_SAVE_MS)
+    ) {
       return;
     }
 
@@ -418,6 +446,8 @@
   document.addEventListener("pointerdown", capturePointerTarget, true);
   document.addEventListener("mousedown", capturePointerTarget, true);
   document.addEventListener("dragstart", attachDragPayload, true);
+  document.addEventListener("dragover", trackDragLocation, true);
+  document.addEventListener("dragleave", trackDragLocation, true);
   document.addEventListener("dragend", finishDrag, true);
   markAnchors();
 
