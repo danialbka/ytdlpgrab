@@ -13,7 +13,7 @@
   "homepage": "https://github.com/danialbka/ytdlpgrab#readme",
   "scripts": {
     "start": "node src/server/index.js",
-    "check": "node --check src/server/index.js && node --check src/extension/content.js && node --check src/extension/popup.js",
+    "check": "node --check src/server/index.js && node --check src/extension/content.js && node --check src/extension/background.js && node --check src/extension/popup.js",
     "build:mac-app": "bash src/scripts/build-mac-app.sh",
     "install:mac-app": "bash src/scripts/install-mac-app.sh",
     "package:extension": "bash src/scripts/package-extension.sh",

@@ -14,6 +14,9 @@
     "http://127.0.0.1:17427/*",
     "http://localhost:17427/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_title": "ytdlpgrab",
     "default_popup": "popup.html",

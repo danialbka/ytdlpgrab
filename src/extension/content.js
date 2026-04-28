@@ -1,5 +1,4 @@
 (() => {
-  const HELPER_ORIGIN = "http://127.0.0.1:17427";
   const READY_CLASS = "ytdlpgrab-ready";
   let activeDrag = null;
   let pendingPointerAnchor = null;
@@ -230,24 +229,19 @@
     );
   }
 
-  function helperUrl(pathname, videoUrl, name) {
-    const url = new URL(pathname, HELPER_ORIGIN);
-    url.searchParams.set("url", videoUrl);
-    url.searchParams.set("name", name);
-    return url.toString();
-  }
-
   function saveToDesktop(videoUrl, name) {
-    const url = new URL(helperUrl("/save", videoUrl, name));
-    url.searchParams.set("destination", "desktop");
-
-    fetch(url.toString(), {
-      method: "GET",
-      mode: "cors",
-      keepalive: true
-    }).catch(() => {
-      // The helper popup reports connection state; avoid interrupting the drag.
-    });
+    chrome.runtime.sendMessage(
+      {
+        type: "ytdlpgrab.save",
+        videoUrl,
+        name,
+        destination: "desktop"
+      },
+      () => {
+        // The helper popup reports connection state; avoid interrupting the drag.
+        void chrome.runtime.lastError;
+      }
+    );
   }
 
   function capturePointerTarget(event) {
@@ -281,8 +275,7 @@
 
     activeDrag = {
       videoUrl,
-      name,
-      startedAt: Date.now()
+      name
     };
   }
 
@@ -294,16 +287,33 @@
     const drag = activeDrag;
     activeDrag = null;
 
-    if (event.dataTransfer?.dropEffect === "none" && Date.now() - drag.startedAt < 500) {
+    if (event.dataTransfer?.dropEffect === "none") {
       return;
     }
 
     saveToDesktop(drag.videoUrl, drag.name);
   }
 
+  function matchingElements(root, selector) {
+    const elements = [];
+    if (!root) {
+      return elements;
+    }
+
+    if (root.nodeType === Node.ELEMENT_NODE && root.matches?.(selector)) {
+      elements.push(root);
+    }
+
+    for (const element of root.querySelectorAll?.(selector) || []) {
+      elements.push(element);
+    }
+
+    return elements;
+  }
+
   function collectHandledAnchors(root = document) {
-    const anchors = new Set(root.querySelectorAll?.(THUMBNAIL_ANCHOR_SELECTOR) || []);
-    const videoItems = root.querySelectorAll?.(VIDEO_ITEM_SELECTOR) || [];
+    const anchors = new Set(matchingElements(root, THUMBNAIL_ANCHOR_SELECTOR));
+    const videoItems = matchingElements(root, VIDEO_ITEM_SELECTOR);
     for (const item of videoItems) {
       for (const anchor of item.querySelectorAll?.(VIDEO_LINK_SELECTOR) || []) {
         anchors.add(anchor);
@@ -311,13 +321,14 @@
     }
 
     const visualChildren =
-      root.querySelectorAll?.(
+      matchingElements(
+        root,
         [
           "a[href] img",
           "a[href] yt-image",
           "a[href] ytd-thumbnail-overlay-time-status-renderer"
         ].join(",")
-      ) || [];
+      );
 
     for (const child of visualChildren) {
       const anchor = child.closest?.("a[href]");
@@ -330,7 +341,7 @@
   }
 
   function markAnchors(root = document) {
-    const marked = root.querySelectorAll?.(`.${READY_CLASS}`) || [];
+    const marked = matchingElements(root, `.${READY_CLASS}`);
     for (const anchor of marked) {
       if (!isHandledVideoAnchor(anchor)) {
         anchor.classList.remove(READY_CLASS);
@@ -349,15 +360,57 @@
     }
   }
 
+  function scanRootFor(element) {
+    return (
+      element.closest?.(VIDEO_ITEM_SELECTOR) ||
+      element.closest?.(THUMBNAIL_CONTAINER_SELECTOR) ||
+      element.closest?.("a[href]") ||
+      element
+    );
+  }
+
+  function mutationRoots(mutations) {
+    const roots = new Set();
+    for (const mutation of mutations) {
+      if (mutation.type === "attributes") {
+        if (mutation.target?.nodeType === Node.ELEMENT_NODE) {
+          roots.add(scanRootFor(mutation.target));
+        }
+        continue;
+      }
+
+      for (const node of mutation.addedNodes || []) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          roots.add(scanRootFor(node));
+        }
+      }
+    }
+
+    return roots;
+  }
+
   const scheduleMarkAnchors = (() => {
     let timer = null;
-    return () => {
+    const roots = new Set();
+
+    return (nextRoots) => {
+      for (const root of nextRoots || [document]) {
+        roots.add(root);
+      }
+
       if (timer) {
         return;
       }
       timer = window.setTimeout(() => {
         timer = null;
-        markAnchors();
+        const pendingRoots = Array.from(roots);
+        roots.clear();
+
+        for (const root of pendingRoots) {
+          if (root === document || root.isConnected) {
+            markAnchors(root);
+          }
+        }
       }, 250);
     };
   })();
@@ -368,8 +421,15 @@
   document.addEventListener("dragend", finishDrag, true);
   markAnchors();
 
-  const observer = new MutationObserver(scheduleMarkAnchors);
+  const observer = new MutationObserver((mutations) => {
+    const roots = mutationRoots(mutations);
+    if (roots.size > 0) {
+      scheduleMarkAnchors(roots);
+    }
+  });
   observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["aria-label", "href", "title"],
     childList: true,
     subtree: true
   });

@@ -11,6 +11,7 @@ rm -f "$ZIP_PATH"
   cd "$ROOT/src/extension"
   zip -r -X "$ZIP_PATH" \
     manifest.json \
+    background.js \
     content.js \
     content.css \
     popup.html \

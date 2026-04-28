@@ -22,6 +22,8 @@ const CACHE_DIR =
   process.env.YTDLPGRAB_CACHE_DIR ||
   path.join(os.homedir(), "Library", "Caches", "ytdlpgrab");
 const ALLOW_ANY_URL = process.env.YTDLPGRAB_ALLOW_ANY_URL === "1";
+const TRUSTED_ACTION_HEADER = "x-ytdlpgrab-extension";
+const TRUSTED_ACTION_VALUE = "1";
 const DOWNLOAD_TIMEOUT_MS = Number(
   process.env.YTDLPGRAB_TIMEOUT_MS || 60 * 60 * 1000
 );
@@ -30,6 +32,10 @@ const TOOL_CHECK_TIMEOUT_MS = Number(
 );
 const TOOL_CACHE_TTL_MS = Number(
   process.env.YTDLPGRAB_TOOL_CACHE_TTL_MS || 30 * 1000
+);
+const MAX_ACTIVE_DOWNLOADS = positiveIntegerFromValue(
+  process.env.YTDLPGRAB_MAX_ACTIVE_DOWNLOADS,
+  3
 );
 const QUALITY_OPTIONS = new Map([
   ["best", { label: "Best available", height: null }],
@@ -44,6 +50,9 @@ const QUALITY = qualityFromValue(process.env.YTDLPGRAB_QUALITY);
 
 const jobs = new Map();
 const saveJobs = new Map();
+const progressListeners = new Map();
+const downloadQueue = [];
+let activeDownloads = 0;
 const toolCache = {
   ytDlp: { checkedAt: 0, value: undefined },
   ffmpeg: { checkedAt: 0, value: undefined },
@@ -57,12 +66,60 @@ if (fs.existsSync(BUNDLED_PYTHON_DIR)) {
     : BUNDLED_PYTHON_DIR;
 }
 
+function positiveIntegerFromValue(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function isAllowedExtensionOrigin(origin) {
+  return (
+    typeof origin === "string" &&
+    (origin.startsWith("chrome-extension://") ||
+      origin.startsWith("moz-extension://"))
+  );
+}
+
+function setCorsHeaders(req, res) {
+  const origin = req.headers.origin;
+  if (!isAllowedExtensionOrigin(origin)) {
+    return;
+  }
+
+  res.setHeader("access-control-allow-origin", origin);
+  res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+  res.setHeader(
+    "access-control-allow-headers",
+    `content-type, ${TRUSTED_ACTION_HEADER}`
+  );
+  res.setHeader("vary", "origin");
+}
+
+function isTrustedActionRequest(req) {
+  const origin = req.headers.origin;
+  if (origin && !isAllowedExtensionOrigin(origin)) {
+    return false;
+  }
+
+  return req.headers[TRUSTED_ACTION_HEADER] === TRUSTED_ACTION_VALUE;
+}
+
+function requireTrustedAction(req, res) {
+  if (isTrustedActionRequest(req)) {
+    return true;
+  }
+
+  sendError(res, 403, "Request was not sent by ytdlpgrab.");
+  return false;
+}
+
+function sendMethodNotAllowed(res, allowedMethods) {
+  res.setHeader("allow", allowedMethods.join(", "));
+  sendError(res, 405, "Method not allowed.");
+}
+
 function sendJson(res, statusCode, value) {
   const body = JSON.stringify(value, null, 2);
   res.writeHead(statusCode, {
-    "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET, OPTIONS",
-    "access-control-allow-headers": "content-type",
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body)
   });
@@ -157,8 +214,8 @@ function formatSelectorForQuality(quality, canMerge = true) {
     return [
       `b[height<=${height}][ext=mp4]`,
       `best[height<=${height}][ext=mp4]`,
-      "b[ext=mp4]",
-      "best[ext=mp4]"
+      `b[height<=${height}]`,
+      `best[height<=${height}]`
     ].join("/");
   }
 
@@ -172,8 +229,7 @@ function formatSelectorForQuality(quality, canMerge = true) {
     `bv*[height<=${height}]+ba`,
     `b[height<=${height}][ext=mp4]`,
     `b[height<=${height}]`,
-    `best[height<=${height}]`,
-    "best"
+    `best[height<=${height}]`
   ].join("/");
 }
 
@@ -409,6 +465,7 @@ function runProcess(command, args, options = {}) {
 
     let stdout = "";
     let stderr = "";
+    let stderrRemainder = "";
     let settled = false;
     const maxOutput = options.maxOutput || 2 * 1024 * 1024;
 
@@ -432,6 +489,14 @@ function runProcess(command, args, options = {}) {
       if (stderr.length < maxOutput) {
         stderr += text;
       }
+
+      if (typeof options.onStderrLine === "function") {
+        const lines = `${stderrRemainder}${text}`.split(/\r?\n/);
+        stderrRemainder = lines.pop() || "";
+        for (const line of lines) {
+          options.onStderrLine(line);
+        }
+      }
     });
 
     child.on("error", (error) => {
@@ -449,6 +514,9 @@ function runProcess(command, args, options = {}) {
       }
       clearTimeout(timer);
       settled = true;
+      if (stderrRemainder && typeof options.onStderrLine === "function") {
+        options.onStderrLine(stderrRemainder);
+      }
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
@@ -519,10 +587,11 @@ async function uniqueOutputPath(directory, filename) {
   return path.join(directory, `${base} ${Date.now()}${ext}`);
 }
 
-async function createDownloadPlaceholder(targetPath, videoUrl) {
-  const placeholderPath = `${targetPath}.download`;
-  await fsp.mkdir(placeholderPath);
-  const info = [
+function downloadInfoPlist(targetPath, videoUrl, progress = {}) {
+  const bytesSoFar = Math.max(0, Math.floor(progress.bytesSoFar || 0));
+  const totalBytes = Math.max(0, Math.floor(progress.totalBytes || 0));
+
+  return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
     '<plist version="1.0">',
@@ -532,15 +601,35 @@ async function createDownloadPlaceholder(targetPath, videoUrl) {
     '  <key>DownloadEntryURL</key>',
     `  <string>${escapePlistString(videoUrl)}</string>`,
     '  <key>DownloadEntryProgressBytesSoFar</key>',
-    '  <integer>0</integer>',
+    `  <integer>${bytesSoFar}</integer>`,
     '  <key>DownloadEntryProgressTotalToLoad</key>',
-    '  <integer>0</integer>',
+    `  <integer>${totalBytes}</integer>`,
     '</dict>',
     '</plist>',
     ''
   ].join("\n");
+}
 
-  await fsp.writeFile(path.join(placeholderPath, "Info.plist"), info);
+async function writeDownloadPlaceholderInfo(
+  placeholderPath,
+  targetPath,
+  videoUrl,
+  progress
+) {
+  await fsp.writeFile(
+    path.join(placeholderPath, "Info.plist"),
+    downloadInfoPlist(targetPath, videoUrl, progress)
+  );
+}
+
+async function createDownloadPlaceholder(targetPath, videoUrl) {
+  const placeholderPath = `${targetPath}.download`;
+  await fsp.mkdir(placeholderPath);
+  await writeDownloadPlaceholderInfo(placeholderPath, targetPath, videoUrl, {
+    bytesSoFar: 0,
+    totalBytes: 0
+  });
+
   return placeholderPath;
 }
 
@@ -549,6 +638,78 @@ function escapePlistString(value) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function bytesFromYtDlpSize(value, unit) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) {
+    return 0;
+  }
+
+  const normalizedUnit = String(unit || "B").toLowerCase();
+  const multipliers = {
+    b: 1,
+    kb: 1000,
+    mb: 1000 ** 2,
+    gb: 1000 ** 3,
+    tb: 1000 ** 4,
+    kib: 1024,
+    mib: 1024 ** 2,
+    gib: 1024 ** 3,
+    tib: 1024 ** 4
+  };
+
+  return Math.round(amount * (multipliers[normalizedUnit] || 1));
+}
+
+function parseYtDlpProgressLine(line) {
+  const text = String(line || "");
+  if (!text.includes("[download]")) {
+    return null;
+  }
+
+  const match = text.match(
+    /\[download\]\s+([0-9]+(?:\.[0-9]+)?)%\s+of\s+~?\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?i?B|[KMGT]?B)\b/i
+  );
+  if (!match) {
+    return null;
+  }
+
+  const percent = Math.min(100, Math.max(0, Number(match[1])));
+  const totalBytes = bytesFromYtDlpSize(match[2], match[3]);
+  const bytesSoFar = totalBytes ? Math.round((totalBytes * percent) / 100) : 0;
+
+  return {
+    bytesSoFar,
+    totalBytes
+  };
+}
+
+function emitDownloadProgress(key, progress) {
+  const listeners = progressListeners.get(key);
+  if (!listeners) {
+    return;
+  }
+
+  for (const listener of listeners) {
+    listener(progress);
+  }
+}
+
+function addDownloadProgressListener(key, listener) {
+  let listeners = progressListeners.get(key);
+  if (!listeners) {
+    listeners = new Set();
+    progressListeners.set(key, listeners);
+  }
+
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      progressListeners.delete(key);
+    }
+  };
 }
 
 async function downloadWithYtDlp(videoUrl, key) {
@@ -598,13 +759,25 @@ async function downloadWithYtDlp(videoUrl, key) {
     console.error(`[ytdlpgrab] downloading ${videoUrl}`);
     const { stdout } = await runProcess(ytDlp.command, args, {
       cwd: workDir,
-      timeoutMs: DOWNLOAD_TIMEOUT_MS
+      timeoutMs: DOWNLOAD_TIMEOUT_MS,
+      onStderrLine(line) {
+        const progress = parseYtDlpProgressLine(line);
+        if (progress) {
+          emitDownloadProgress(key, progress);
+        }
+      }
     });
     const downloaded = await findDownloadedFile(workDir, baseName, stdout);
 
     if (!downloaded) {
       throw new Error("yt-dlp completed but no output file was found.");
     }
+
+    const stat = await fsp.stat(downloaded);
+    emitDownloadProgress(key, {
+      bytesSoFar: stat.size,
+      totalBytes: stat.size
+    });
 
     await fsp.mkdir(CACHE_DIR, { recursive: true });
     await fsp.rename(downloaded, targetPath);
@@ -613,6 +786,28 @@ async function downloadWithYtDlp(videoUrl, key) {
   } finally {
     await removeQuietly(workDir);
   }
+}
+
+function startQueuedDownloads() {
+  while (activeDownloads < MAX_ACTIVE_DOWNLOADS && downloadQueue.length > 0) {
+    const next = downloadQueue.shift();
+    activeDownloads += 1;
+
+    Promise.resolve()
+      .then(next.task)
+      .then(next.resolve, next.reject)
+      .finally(() => {
+        activeDownloads -= 1;
+        startQueuedDownloads();
+      });
+  }
+}
+
+function runWithDownloadSlot(task) {
+  return new Promise((resolve, reject) => {
+    downloadQueue.push({ task, resolve, reject });
+    startQueuedDownloads();
+  });
 }
 
 async function ensureDownloaded(videoUrl) {
@@ -627,22 +822,64 @@ async function ensureDownloaded(videoUrl) {
     return jobs.get(key);
   }
 
-  const job = downloadWithYtDlp(videoUrl, key).finally(() => {
-    jobs.delete(key);
-  });
+  const job = runWithDownloadSlot(() => downloadWithYtDlp(videoUrl, key))
+    .finally(() => {
+      jobs.delete(key);
+    });
 
   jobs.set(key, job);
   return job;
 }
 
 async function saveDownloadedCopy(videoUrl, name, destination) {
+  const key = cacheKeyFor(videoUrl);
   const outputDirectory = outputDirectoryForDestination(destination);
   await fsp.mkdir(outputDirectory, { recursive: true });
   const targetPath = await uniqueOutputPath(outputDirectory, name);
   const placeholderPath = await createDownloadPlaceholder(targetPath, videoUrl);
+  let removeProgressListener = null;
+  let lastPlaceholderWrite = 0;
+  let pendingPlaceholderWrite = Promise.resolve();
+
+  const updatePlaceholder = (progress, force = false) => {
+    const now = Date.now();
+    if (!force && now - lastPlaceholderWrite < 750) {
+      return;
+    }
+
+    lastPlaceholderWrite = now;
+    pendingPlaceholderWrite = pendingPlaceholderWrite
+      .catch(() => undefined)
+      .then(() =>
+        writeDownloadPlaceholderInfo(
+          placeholderPath,
+          targetPath,
+          videoUrl,
+          progress
+        )
+      )
+      .catch((error) => {
+        console.error(
+          `[ytdlpgrab] placeholder update failed: ${error.message}`
+        );
+      });
+  };
+
+  removeProgressListener = addDownloadProgressListener(key, (progress) => {
+    updatePlaceholder(progress);
+  });
 
   try {
     const sourcePath = await ensureDownloaded(videoUrl);
+    const stat = await fsp.stat(sourcePath);
+    updatePlaceholder(
+      {
+        bytesSoFar: stat.size,
+        totalBytes: stat.size
+      },
+      true
+    );
+    await pendingPlaceholderWrite;
     await fsp.copyFile(sourcePath, targetPath);
     await removeQuietly(placeholderPath);
     console.error(`[ytdlpgrab] saved ${targetPath}`);
@@ -650,6 +887,8 @@ async function saveDownloadedCopy(videoUrl, name, destination) {
   } catch (error) {
     await removeQuietly(placeholderPath);
     throw error;
+  } finally {
+    removeProgressListener?.();
   }
 }
 
@@ -701,7 +940,6 @@ async function streamDownload(req, res, query) {
     const stat = await fsp.stat(filePath);
 
     res.writeHead(200, {
-      "access-control-allow-origin": "*",
       "content-type": "video/mp4",
       "content-disposition": contentDisposition(filename),
       "content-length": stat.size,
@@ -821,17 +1059,23 @@ function health() {
       }
     },
     activeJobs: jobs.size,
+    activeDownloads,
+    queuedDownloads: downloadQueue.length,
+    maxActiveDownloads: MAX_ACTIVE_DOWNLOADS,
     activeSaves: saveJobs.size
   };
 }
 
 const server = http.createServer(async (req, res) => {
+  setCorsHeaders(req, res);
+
   if (req.method === "OPTIONS") {
-    res.writeHead(204, {
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, OPTIONS",
-      "access-control-allow-headers": "content-type"
-    });
+    if (req.headers.origin && !isAllowedExtensionOrigin(req.headers.origin)) {
+      sendError(res, 403, "Origin is not allowed.");
+      return;
+    }
+
+    res.writeHead(204);
     res.end();
     return;
   }
@@ -843,17 +1087,41 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/prepare") {
+  if (url.pathname === "/prepare") {
+    if (req.method !== "POST") {
+      sendMethodNotAllowed(res, ["POST", "OPTIONS"]);
+      return;
+    }
+    if (!requireTrustedAction(req, res)) {
+      return;
+    }
+
     await prepareDownload(res, url.searchParams);
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/save") {
+  if (url.pathname === "/save") {
+    if (req.method !== "POST") {
+      sendMethodNotAllowed(res, ["POST", "OPTIONS"]);
+      return;
+    }
+    if (!requireTrustedAction(req, res)) {
+      return;
+    }
+
     await saveDownload(res, url.searchParams);
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/download") {
+  if (url.pathname === "/download") {
+    if (req.method !== "GET" && req.method !== "POST") {
+      sendMethodNotAllowed(res, ["GET", "POST", "OPTIONS"]);
+      return;
+    }
+    if (!requireTrustedAction(req, res)) {
+      return;
+    }
+
     await streamDownload(req, res, url.searchParams);
     return;
   }
