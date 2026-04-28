@@ -1,0 +1,6 @@
+.DS_Store
+.venv/
+bin/yt-dlp
+build/
+node_modules/
+npm-debug.log*

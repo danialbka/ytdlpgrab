@@ -1,0 +1,27 @@
+{
+  "name": "ytdlpgrab",
+  "version": "0.1.0",
+  "description": "Drag YouTube thumbnails out of Chrome and let a local helper turn them into MP4 files.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danialbka/ytdlpgrab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/danialbka/ytdlpgrab/issues"
+  },
+  "homepage": "https://github.com/danialbka/ytdlpgrab#readme",
+  "scripts": {
+    "start": "node server/index.js",
+    "check": "node --check server/index.js && node --check extension/content.js && node --check extension/popup.js",
+    "build:mac-app": "bash scripts/build-mac-app.sh",
+    "install:mac-app": "bash scripts/install-mac-app.sh",
+    "install:yt-dlp": "bash scripts/install-yt-dlp-nightly.sh",
+    "install:yt-dlp:pip": "bash scripts/install-yt-dlp-local.sh",
+    "install:launch-agent": "bash scripts/install-launch-agent.sh",
+    "uninstall:launch-agent": "bash scripts/uninstall-launch-agent.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

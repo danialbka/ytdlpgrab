@@ -1,0 +1,7 @@
+.ytdlpgrab-ready {
+  cursor: grab;
+}
+
+.ytdlpgrab-ready:active {
+  cursor: grabbing;
+}
