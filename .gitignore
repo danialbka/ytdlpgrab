@@ -1,6 +1,7 @@
 .DS_Store
 .venv/
-bin/yt-dlp
+src/bin/yt-dlp
 build/
+dist/
 node_modules/
 npm-debug.log*

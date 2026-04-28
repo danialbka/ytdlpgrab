@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ytdlpgrab</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        min-width: 260px;
+        padding: 14px;
+      }
+
+      h1 {
+        font-size: 15px;
+        line-height: 1.2;
+        margin: 0 0 10px;
+      }
+
+      .status {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        font-size: 13px;
+        min-height: 22px;
+      }
+
+      .dot {
+        border-radius: 999px;
+        display: inline-block;
+        flex: 0 0 auto;
+        height: 9px;
+        width: 9px;
+      }
+
+      .dot.pending {
+        background: #f59e0b;
+      }
+
+      .dot.ok {
+        background: #10b981;
+      }
+
+      .dot.bad {
+        background: #ef4444;
+      }
+
+      .detail {
+        color: color-mix(in srgb, CanvasText 66%, transparent);
+        font-size: 12px;
+        line-height: 1.35;
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>ytdlpgrab</h1>
+    <div class="status">
+      <span id="dot" class="dot pending"></span>
+      <span id="status">Checking helper...</span>
+    </div>
+    <div id="detail" class="detail"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

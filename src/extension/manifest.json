@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "ytdlpgrab",
+  "version": "0.1.0",
+  "description": "Drag YouTube thumbnails or titles to Desktop/Finder as MP4 downloads.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [],
+  "host_permissions": [
+    "http://127.0.0.1:17427/*",
+    "http://localhost:17427/*"
+  ],
+  "action": {
+    "default_title": "ytdlpgrab",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://youtube.com/*",
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://music.youtube.com/*",
+        "https://youtu.be/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
