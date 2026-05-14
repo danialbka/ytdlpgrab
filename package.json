@@ -1,6 +1,6 @@
 {
   "name": "ytdlpgrab",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Drag YouTube thumbnails or titles out of Chrome and let a local helper turn them into MP4 files.",
   "license": "MIT",
   "repository": {

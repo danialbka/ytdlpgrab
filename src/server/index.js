@@ -46,6 +46,7 @@ const QUALITY_OPTIONS = new Map([
   ["480", { label: "480p", height: 480 }],
   ["360", { label: "360p", height: 360 }]
 ]);
+const CACHE_FORMAT_PROFILE = "mp4-h264-aac-v1";
 const QUALITY = qualityFromValue(process.env.YTDLPGRAB_QUALITY);
 
 const jobs = new Map();
@@ -205,29 +206,41 @@ function qualityLabelFor(quality) {
 
 function formatSelectorForQuality(quality, canMerge = true) {
   const option = QUALITY_OPTIONS.get(quality) || QUALITY_OPTIONS.get("best");
+  const compatibleVideo = "[ext=mp4][vcodec^=avc1]";
+  const compatibleAudio = "[ext=m4a][acodec^=mp4a]";
+  const compatibleMuxed = "[ext=mp4][vcodec^=avc1][acodec^=mp4a]";
+
   if (!canMerge) {
     if (!option.height) {
-      return "b[ext=mp4]/best[ext=mp4]";
+      return `b${compatibleMuxed}/b${compatibleVideo}/best[ext=mp4]`;
     }
 
     const height = option.height;
     return [
-      `b[height<=${height}][ext=mp4]`,
+      `b[height<=${height}]${compatibleMuxed}`,
+      `b[height<=${height}]${compatibleVideo}`,
       `best[height<=${height}][ext=mp4]`,
-      `b[height<=${height}]`,
-      `best[height<=${height}]`
+      `b[height<=${height}]`
     ].join("/");
   }
 
   if (!option.height) {
-    return "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b";
+    return [
+      `bv*${compatibleVideo}+ba${compatibleAudio}`,
+      `b${compatibleMuxed}`,
+      "bv*[ext=mp4]+ba[ext=m4a]",
+      "b[ext=mp4]",
+      "bv*+ba/b"
+    ].join("/");
   }
 
   const height = option.height;
   return [
+    `bv*[height<=${height}]${compatibleVideo}+ba${compatibleAudio}`,
+    `b[height<=${height}]${compatibleMuxed}`,
     `bv*[height<=${height}][ext=mp4]+ba[ext=m4a]`,
-    `bv*[height<=${height}]+ba`,
     `b[height<=${height}][ext=mp4]`,
+    `bv*[height<=${height}]+ba`,
     `b[height<=${height}]`,
     `best[height<=${height}]`
   ].join("/");
@@ -236,7 +249,7 @@ function formatSelectorForQuality(quality, canMerge = true) {
 function cacheKeyFor(videoUrl) {
   return crypto
     .createHash("sha256")
-    .update(`${videoUrl}\nquality=${QUALITY}`)
+    .update(`${videoUrl}\nquality=${QUALITY}\nformat=${CACHE_FORMAT_PROFILE}`)
     .digest("hex");
 }
 

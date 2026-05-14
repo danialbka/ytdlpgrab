@@ -113,8 +113,8 @@ npm run package:release
 This creates:
 
 ```sh
-YTDLPGrab-0.1.0-arm64.dmg
-ytdlpgrab-extension-0.1.0.zip
+YTDLPGrab-0.1.1-arm64.dmg
+ytdlpgrab-extension-0.1.1.zip
 ```
 
 `npm run package:dmg` builds only the DMG. `npm run package:extension` builds only the extension zip.
@@ -207,7 +207,7 @@ The helper looks for `YT_DLP_PATH`, then `src/bin/yt-dlp`, then `.venv`, then co
 
 ## Notes
 
-- The selected format prefers MP4 video plus M4A audio at or below the chosen quality, then falls back through `yt-dlp` best formats and remuxes to MP4.
+- The selected format prefers H.264 MP4 video plus AAC/M4A audio at or below the chosen quality, then falls back through `yt-dlp` best formats and remuxes to MP4.
 - Quality caps are applied to future downloads and cached separately.
 - YouTube changes often break older downloader builds. Run `npm run install:yt-dlp` to refresh the bundled nightly binary.
 - Use this only for content you have rights to download and in compliance with the sites you use.
