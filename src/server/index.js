@@ -46,8 +46,28 @@ const QUALITY_OPTIONS = new Map([
   ["480", { label: "480p", height: 480 }],
   ["360", { label: "360p", height: 360 }]
 ]);
-const CACHE_FORMAT_PROFILE = "mp4-h264-aac-v1";
+const DOWNLOAD_MODE_OPTIONS = new Map([
+  [
+    "youtube",
+    {
+      label: "YouTube Video",
+      extension: "mp4",
+      contentType: "video/mp4",
+      cacheProfile: "youtube-mp4-h264-aac-v1"
+    }
+  ],
+  [
+    "audio",
+    {
+      label: "Audio",
+      extension: "m4a",
+      contentType: "audio/mp4",
+      cacheProfile: "audio-m4a-aac-v1"
+    }
+  ]
+]);
 const QUALITY = qualityFromValue(process.env.YTDLPGRAB_QUALITY);
+const DOWNLOAD_MODE = modeFromValue(process.env.YTDLPGRAB_MODE);
 
 const jobs = new Map();
 const saveJobs = new Map();
@@ -146,13 +166,14 @@ function sanitizeFileName(value) {
   return cleaned || "youtube-video";
 }
 
-function withMp4Extension(name) {
+function withOutputExtension(name) {
+  const extension = modeOptionFor(DOWNLOAD_MODE).extension;
   const base = sanitizeFileName(name).replace(/\.[a-z0-9]{1,5}$/i, "");
-  return `${base}.mp4`;
+  return `${base}.${extension}`;
 }
 
 function contentDisposition(filename) {
-  const asciiName = withMp4Extension(filename).replace(/[";]/g, " ");
+  const asciiName = withOutputExtension(filename).replace(/[";]/g, " ");
   return `attachment; filename="${asciiName}"`;
 }
 
@@ -204,6 +225,19 @@ function qualityLabelFor(quality) {
   return QUALITY_OPTIONS.get(quality)?.label || QUALITY_OPTIONS.get("best").label;
 }
 
+function modeFromValue(value) {
+  const normalized = String(value || "youtube").toLowerCase();
+  return DOWNLOAD_MODE_OPTIONS.has(normalized) ? normalized : "youtube";
+}
+
+function modeOptionFor(mode) {
+  return DOWNLOAD_MODE_OPTIONS.get(mode) || DOWNLOAD_MODE_OPTIONS.get("youtube");
+}
+
+function modeLabelFor(mode) {
+  return modeOptionFor(mode).label;
+}
+
 function formatSelectorForQuality(quality, canMerge = true) {
   const option = QUALITY_OPTIONS.get(quality) || QUALITY_OPTIONS.get("best");
   const compatibleVideo = "[ext=mp4][vcodec^=avc1]";
@@ -246,15 +280,39 @@ function formatSelectorForQuality(quality, canMerge = true) {
   ].join("/");
 }
 
+function audioFormatSelector(canTranscode = true) {
+  if (canTranscode) {
+    return "ba[ext=m4a][acodec^=mp4a]/ba[ext=m4a]/bestaudio";
+  }
+
+  return "ba[ext=m4a][acodec^=mp4a]/ba[ext=m4a]";
+}
+
+function formatSelectorForMode(mode, quality, canMerge = true) {
+  if (mode === "audio") {
+    return audioFormatSelector(canMerge);
+  }
+
+  return formatSelectorForQuality(quality, canMerge);
+}
+
 function cacheKeyFor(videoUrl) {
+  const modeOption = modeOptionFor(DOWNLOAD_MODE);
   return crypto
     .createHash("sha256")
-    .update(`${videoUrl}\nquality=${QUALITY}\nformat=${CACHE_FORMAT_PROFILE}`)
+    .update(
+      [
+        videoUrl,
+        `mode=${DOWNLOAD_MODE}`,
+        `quality=${QUALITY}`,
+        `format=${modeOption.cacheProfile}`
+      ].join("\n")
+    )
     .digest("hex");
 }
 
 function cachedPathFor(key) {
-  return path.join(CACHE_DIR, `${key}.mp4`);
+  return path.join(CACHE_DIR, `${key}.${modeOptionFor(DOWNLOAD_MODE).extension}`);
 }
 
 function cacheGet(key, resolver) {
@@ -544,6 +602,7 @@ function runProcess(command, args, options = {}) {
 }
 
 async function findDownloadedFile(workDir, baseName, stdout) {
+  const extension = `.${modeOptionFor(DOWNLOAD_MODE).extension}`;
   const printedPath = stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -551,7 +610,11 @@ async function findDownloadedFile(workDir, baseName, stdout) {
     .filter((line) => path.isAbsolute(line))
     .pop();
 
-  if (printedPath && fs.existsSync(printedPath)) {
+  if (
+    printedPath &&
+    printedPath.toLowerCase().endsWith(extension) &&
+    fs.existsSync(printedPath)
+  ) {
     return printedPath;
   }
 
@@ -561,8 +624,10 @@ async function findDownloadedFile(workDir, baseName, stdout) {
     .filter((entry) => !entry.endsWith(".part") && !entry.endsWith(".ytdl"))
     .map((entry) => path.join(workDir, entry));
 
-  const mp4 = candidates.find((entry) => entry.toLowerCase().endsWith(".mp4"));
-  return mp4 || candidates[0];
+  const preferred = candidates.find((entry) =>
+    entry.toLowerCase().endsWith(extension)
+  );
+  return preferred || candidates[0];
 }
 
 async function removeQuietly(filePath) {
@@ -574,7 +639,7 @@ async function removeQuietly(filePath) {
 }
 
 async function uniqueOutputPath(directory, filename) {
-  const safeName = withMp4Extension(filename);
+  const safeName = withOutputExtension(filename);
   const ext = path.extname(safeName);
   const base = path.basename(safeName, ext);
 
@@ -747,7 +812,7 @@ async function downloadWithYtDlp(videoUrl, key) {
     "--no-mtime",
     "--newline",
     "-f",
-    formatSelectorForQuality(QUALITY, Boolean(ffmpeg)),
+    formatSelectorForMode(DOWNLOAD_MODE, QUALITY, Boolean(ffmpeg)),
     "--print",
     "after_move:filepath",
     "-o",
@@ -755,7 +820,19 @@ async function downloadWithYtDlp(videoUrl, key) {
     videoUrl
   ];
 
-  if (ffmpeg) {
+  if (ffmpeg && DOWNLOAD_MODE === "audio") {
+    args.splice(
+      args.length - 1,
+      0,
+      "--ffmpeg-location",
+      path.dirname(ffmpeg.command),
+      "--extract-audio",
+      "--audio-format",
+      "m4a",
+      "--audio-quality",
+      "0"
+    );
+  } else if (ffmpeg) {
     args.splice(
       args.length - 1,
       0,
@@ -909,7 +986,7 @@ function startSave(videoUrl, name, destination) {
   const saveKey = [
     cacheKeyFor(videoUrl),
     destination || "desktop",
-    withMp4Extension(name)
+    withOutputExtension(name)
   ].join(":");
 
   if (saveJobs.has(saveKey)) {
@@ -946,14 +1023,15 @@ async function streamDownload(req, res, query) {
     return;
   }
 
-  const filename = withMp4Extension(query.get("name") || "youtube-video");
+  const filename = withOutputExtension(query.get("name") || "youtube-video");
+  const modeOption = modeOptionFor(DOWNLOAD_MODE);
 
   try {
     const filePath = await ensureDownloaded(videoUrl);
     const stat = await fsp.stat(filePath);
 
     res.writeHead(200, {
-      "content-type": "video/mp4",
+      "content-type": modeOption.contentType,
       "content-disposition": contentDisposition(filename),
       "content-length": stat.size,
       "cache-control": "private, max-age=31536000"
@@ -1051,6 +1129,15 @@ function health() {
       options: Array.from(QUALITY_OPTIONS, ([id, option]) => ({
         id,
         label: option.label
+      }))
+    },
+    mode: {
+      id: DOWNLOAD_MODE,
+      label: modeLabelFor(DOWNLOAD_MODE),
+      options: Array.from(DOWNLOAD_MODE_OPTIONS, ([id, option]) => ({
+        id,
+        label: option.label,
+        extension: option.extension
       }))
     },
     jsRuntimes: resolveJavaScriptRuntimes(),

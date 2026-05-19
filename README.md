@@ -12,8 +12,10 @@ The goal is a Mac-like "grab the media" flow: start a drag from a YouTube thumbn
 - Local-only helper server on `127.0.0.1:17427`.
 - Browser extension for YouTube thumbnail and video-title drags.
 - No visible badge or overlay on YouTube pages.
+- Mode menu: YouTube Video MP4 or Audio M4A.
 - Quality menu: Best, 4K, 1440p, 1080p, 720p, 480p, or 360p.
 - MP4 output with video and audio merged through `yt-dlp` and `ffmpeg`.
+- M4A output for audio-only mode.
 - Completed-download cache in `~/Library/Caches/ytdlpgrab`.
 - Start at Login toggle in the menu-bar app.
 
@@ -113,8 +115,8 @@ npm run package:release
 This creates:
 
 ```sh
-YTDLPGrab-0.1.1-arm64.dmg
-ytdlpgrab-extension-0.1.1.zip
+YTDLPGrab-0.1.2-arm64.dmg
+ytdlpgrab-extension-0.1.2.zip
 ```
 
 `npm run package:dmg` builds only the DMG. `npm run package:extension` builds only the extension zip.
@@ -136,6 +138,7 @@ The `YT` menu includes:
 
 - helper server status
 - start and stop server
+- mode selection for YouTube Video or Audio
 - quality selection
 - open Desktop
 - open logs
@@ -191,6 +194,7 @@ Logs are written to `~/Library/Logs/ytdlpgrab.log` and `~/Library/Logs/ytdlpgrab
 
 - `YTDLPGRAB_PORT=17427` changes the helper port.
 - `YTDLPGRAB_CACHE_DIR=/path/to/cache` changes the cache folder.
+- `YTDLPGRAB_MODE=audio` switches helper output to audio-only M4A. The default is `youtube` for MP4 video.
 - `YTDLPGRAB_ALLOW_ANY_URL=1` allows non-YouTube URLs supported by `yt-dlp`.
 - `YT_DLP_PATH=/path/to/yt-dlp` forces a specific `yt-dlp` executable.
 
@@ -208,6 +212,7 @@ The helper looks for `YT_DLP_PATH`, then `src/bin/yt-dlp`, then `.venv`, then co
 ## Notes
 
 - The selected format prefers H.264 MP4 video plus AAC/M4A audio at or below the chosen quality, then falls back through `yt-dlp` best formats and remuxes to MP4.
+- Audio mode prefers AAC/M4A audio and uses `ffmpeg` to extract M4A when available.
 - Quality caps are applied to future downloads and cached separately.
 - YouTube changes often break older downloader builds. Run `npm run install:yt-dlp` to refresh the bundled nightly binary.
 - Use this only for content you have rights to download and in compliance with the sites you use.

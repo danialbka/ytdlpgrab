@@ -5,6 +5,7 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let qualityDefaultsKey = "SelectedQuality"
+    private let modeDefaultsKey = "SelectedDownloadMode"
     private let qualityOptions = [
         QualityOption(id: "best", title: "Best Available"),
         QualityOption(id: "2160", title: "4K / 2160p"),
@@ -13,6 +14,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         QualityOption(id: "720", title: "720p"),
         QualityOption(id: "480", title: "480p"),
         QualityOption(id: "360", title: "360p")
+    ]
+    private let modeOptions = [
+        DownloadModeOption(id: "youtube", title: "YouTube Video"),
+        DownloadModeOption(id: "audio", title: "Audio")
     ]
     private var serverProcess: Process?
     private var outputHandle: FileHandle?
@@ -61,6 +66,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var selectedQualityTitle: String {
         qualityOptions.first { $0.id == selectedQualityId }?.title ?? "Best Available"
+    }
+
+    private var selectedModeId: String {
+        get {
+            let stored = UserDefaults.standard.string(forKey: modeDefaultsKey) ?? "youtube"
+            return modeOptions.contains { $0.id == stored } ? stored : "youtube"
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: modeDefaultsKey)
+        }
+    }
+
+    private var selectedModeTitle: String {
+        modeOptions.first { $0.id == selectedModeId }?.title ?? "YouTube Video"
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -127,7 +146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "PYTHONPATH": resourcesURL.appendingPathComponent("python").path,
                 "YTDLPGRAB_HOST": "127.0.0.1",
                 "YTDLPGRAB_PORT": "17427",
-                "YTDLPGRAB_QUALITY": selectedQualityId
+                "YTDLPGRAB_QUALITY": selectedQualityId,
+                "YTDLPGRAB_MODE": selectedModeId
             ]
             process.standardOutput = outputHandle
             process.standardError = errorHandle
@@ -198,17 +218,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         selectedQualityId = qualityId
         appendDiagnostic("quality changed to \(qualityId)")
 
-        if serverProcess == nil {
-            rebuildMenu()
+        restartServerIfNeeded()
+    }
+
+    @objc private func selectMode(_ sender: NSMenuItem) {
+        guard
+            let modeId = sender.representedObject as? String,
+            modeOptions.contains(where: { $0.id == modeId })
+        else {
             return
         }
 
-        stopServer()
-        healthSummary = "Restarting..."
-        rebuildMenu()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            self?.startServer()
-        }
+        selectedModeId = modeId
+        appendDiagnostic("mode changed to \(modeId)")
+
+        restartServerIfNeeded()
     }
 
     @objc private func openDesktop() {
@@ -325,6 +349,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(withTitle: "Stop Server", action: #selector(stopServer), keyEquivalent: "")
         }
 
+        let modeItem = NSMenuItem(title: "Mode: \(selectedModeTitle)", action: nil, keyEquivalent: "")
+        let modeMenu = NSMenu()
+        for option in modeOptions {
+            let item = NSMenuItem(
+                title: option.title,
+                action: #selector(selectMode(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = option.id
+            item.state = option.id == selectedModeId ? .on : .off
+            modeMenu.addItem(item)
+        }
+        menu.addItem(modeItem)
+        menu.setSubmenu(modeMenu, for: modeItem)
+
         let qualityItem = NSMenuItem(title: "Quality: \(selectedQualityTitle)", action: nil, keyEquivalent: "")
         let qualityMenu = NSMenu()
         for option in qualityOptions {
@@ -359,6 +399,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Quit YTDLPGrab", action: #selector(quitApp), keyEquivalent: "q")
 
         statusItem.menu = menu
+    }
+
+    private func restartServerIfNeeded() {
+        if serverProcess == nil {
+            rebuildMenu()
+            return
+        }
+
+        stopServer()
+        healthSummary = "Restarting..."
+        rebuildMenu()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.startServer()
+        }
     }
 
     private func startAtLoginState() -> NSControl.StateValue {
@@ -418,6 +472,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 private struct QualityOption {
+    let id: String
+    let title: String
+}
+
+private struct DownloadModeOption {
     let id: String
     let title: String
 }

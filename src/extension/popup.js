@@ -23,7 +23,12 @@ fetch("http://127.0.0.1:17427/health")
     setStatus(
       "ok",
       "Ready for Desktop drops.",
-      `yt-dlp ${health.tools.ytDlp.version || ""}`.trim()
+      [
+        health.mode?.label || "YouTube Video",
+        `yt-dlp ${health.tools.ytDlp.version || ""}`.trim()
+      ]
+        .filter(Boolean)
+        .join(" | ")
     );
   })
   .catch(() => {
