@@ -6,5 +6,6 @@ dist/
 node_modules/
 npm-debug.log*
 ytdlpgrab-extension-*/
+tests/artifacts/
 YTDLPGrab-*.dmg
 ytdlpgrab-extension-*.zip

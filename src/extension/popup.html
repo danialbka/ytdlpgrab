@@ -12,7 +12,7 @@
 
       body {
         margin: 0;
-        min-width: 260px;
+        min-width: 300px;
         padding: 14px;
       }
 
@@ -46,6 +46,10 @@
         background: #10b981;
       }
 
+      .dot.warn {
+        background: #f59e0b;
+      }
+
       .dot.bad {
         background: #ef4444;
       }
@@ -56,6 +60,59 @@
         line-height: 1.35;
         margin-top: 10px;
       }
+
+      .current-video {
+        border-top: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+        margin-top: 14px;
+        padding-top: 14px;
+      }
+
+      button {
+        background: #ff0033;
+        border: 0;
+        border-radius: 8px;
+        color: white;
+        cursor: pointer;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 650;
+        padding: 10px 12px;
+        width: 100%;
+      }
+
+      button:hover:not(:disabled) {
+        background: #dc002c;
+      }
+
+      button:focus-visible {
+        outline: 2px solid Highlight;
+        outline-offset: 2px;
+      }
+
+      button:disabled {
+        cursor: default;
+        opacity: 0.48;
+      }
+
+      .current-detail,
+      .action-status {
+        color: color-mix(in srgb, CanvasText 66%, transparent);
+        font-size: 12px;
+        line-height: 1.35;
+        margin: 8px 0 0;
+      }
+
+      .action-status:empty {
+        display: none;
+      }
+
+      .action-status.error {
+        color: #ef4444;
+      }
+
+      .action-status.success {
+        color: #10b981;
+      }
     </style>
   </head>
   <body>
@@ -65,6 +122,15 @@
       <span id="status">Checking helper...</span>
     </div>
     <div id="detail" class="detail"></div>
+    <section class="current-video" aria-labelledby="download-current">
+      <button id="download-current" type="button" disabled>
+        Checking current tab...
+      </button>
+      <p id="current-detail" class="current-detail">
+        Open a YouTube video to download what you are watching.
+      </p>
+      <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+    </section>
     <script src="popup.js"></script>
   </body>
 </html>

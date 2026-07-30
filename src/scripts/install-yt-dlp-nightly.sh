@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_DIR="$ROOT/src/bin"
@@ -7,6 +8,9 @@ TARGET="$BIN_DIR/yt-dlp"
 API_URL="https://api.github.com/repos/yt-dlp/yt-dlp-nightly-builds/releases/latest"
 
 case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64|Darwin-aarch64)
+    ASSET_NAME="${YTDLPGRAB_YTDLP_ASSET:-yt-dlp_macos_arm64}"
+    ;;
   Darwin-*)
     ASSET_NAME="${YTDLPGRAB_YTDLP_ASSET:-yt-dlp_macos}"
     ;;
@@ -30,7 +34,8 @@ import sys
 import urllib.request
 
 api_url, asset_name = sys.argv[1:3]
-with urllib.request.urlopen(api_url) as response:
+req = urllib.request.Request(api_url, headers={"User-Agent": "ytdlpgrab"})
+with urllib.request.urlopen(req) as response:
     release = json.load(response)
 
 assets = {asset["name"]: asset["browser_download_url"] for asset in release["assets"]}
@@ -46,8 +51,8 @@ SUMS_FILE="$(mktemp)"
 trap 'rm -f "$TMP_FILE" "$SUMS_FILE"' EXIT
 
 echo "Downloading yt-dlp nightly $TAG_NAME ($ASSET_NAME)"
-curl -fsSL "$ASSET_URL" -o "$TMP_FILE"
-curl -fsSL "$SUMS_URL" -o "$SUMS_FILE"
+curl -fsSL --connect-timeout 30 --max-time 120 --user-agent "ytdlpgrab" "$ASSET_URL" -o "$TMP_FILE"
+curl -fsSL --connect-timeout 30 --max-time 120 --user-agent "ytdlpgrab" "$SUMS_URL" -o "$SUMS_FILE"
 
 EXPECTED="$(awk -v name="$ASSET_NAME" '$2 == name { print $1 }' "$SUMS_FILE")"
 ACTUAL="$(shasum -a 256 "$TMP_FILE" | awk '{ print $1 }')"

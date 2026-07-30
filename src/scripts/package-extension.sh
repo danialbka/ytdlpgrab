@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="$(node -p "require('./package.json').version")"
+VERSION="$(cd "$ROOT" && node -p "require('./package.json').version")"
 ZIP_PATH="$ROOT/ytdlpgrab-extension-$VERSION.zip"
 
 rm -f "$ZIP_PATH"
@@ -16,7 +17,8 @@ rm -f "$ZIP_PATH"
     content.css \
     popup.html \
     popup.js \
-    icons >/dev/null
+    icons \
+    -x "*.DS_Store" >/dev/null
 )
 
 unzip -t "$ZIP_PATH" >/dev/null

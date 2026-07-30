@@ -17,21 +17,21 @@ const REPO_ROOT =
 const BUNDLED_PYTHON_DIR = path.join(PROJECT_ROOT, "python");
 const BUNDLED_BIN_DIR = path.join(PROJECT_ROOT, "bin");
 const HOST = process.env.YTDLPGRAB_HOST || "127.0.0.1";
-const PORT = Number(process.env.YTDLPGRAB_PORT || process.env.PORT || 17427);
+const PORT = positiveIntegerFromValue(process.env.YTDLPGRAB_PORT || process.env.PORT, 17427);
 const CACHE_DIR =
   process.env.YTDLPGRAB_CACHE_DIR ||
   path.join(os.homedir(), "Library", "Caches", "ytdlpgrab");
 const ALLOW_ANY_URL = process.env.YTDLPGRAB_ALLOW_ANY_URL === "1";
 const TRUSTED_ACTION_HEADER = "x-ytdlpgrab-extension";
 const TRUSTED_ACTION_VALUE = "1";
-const DOWNLOAD_TIMEOUT_MS = Number(
-  process.env.YTDLPGRAB_TIMEOUT_MS || 60 * 60 * 1000
+const DOWNLOAD_TIMEOUT_MS = positiveIntegerFromValue(
+  process.env.YTDLPGRAB_TIMEOUT_MS, 60 * 60 * 1000
 );
-const TOOL_CHECK_TIMEOUT_MS = Number(
-  process.env.YTDLPGRAB_TOOL_CHECK_TIMEOUT_MS || 3000
+const TOOL_CHECK_TIMEOUT_MS = positiveIntegerFromValue(
+  process.env.YTDLPGRAB_TOOL_CHECK_TIMEOUT_MS, 3000
 );
-const TOOL_CACHE_TTL_MS = Number(
-  process.env.YTDLPGRAB_TOOL_CACHE_TTL_MS || 30 * 1000
+const TOOL_CACHE_TTL_MS = positiveIntegerFromValue(
+  process.env.YTDLPGRAB_TOOL_CACHE_TTL_MS, 30 * 1000
 );
 const MAX_ACTIVE_DOWNLOADS = positiveIntegerFromValue(
   process.env.YTDLPGRAB_MAX_ACTIVE_DOWNLOADS,
@@ -129,13 +129,13 @@ function requireTrustedAction(req, res) {
     return true;
   }
 
-  sendError(res, 403, "Request was not sent by ytdlpgrab.");
+  sendError(res, 403, "Request is missing the trusted extension header.");
   return false;
 }
 
 function sendMethodNotAllowed(res, allowedMethods) {
   res.setHeader("allow", allowedMethods.join(", "));
-  sendError(res, 405, "Method not allowed.");
+  sendError(res, 405, `Method not allowed. Allowed: ${allowedMethods.join(", ")}.`);
 }
 
 function sendJson(res, statusCode, value) {
@@ -160,10 +160,9 @@ function sanitizeFileName(value) {
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/[\\/:*?"<>|#%{}$!`+=@]/g, " ")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
+    .trim();
 
-  return cleaned || "youtube-video";
+  return Array.from(cleaned).slice(0, 120).join("") || "youtube-video";
 }
 
 function withOutputExtension(name) {
@@ -173,8 +172,12 @@ function withOutputExtension(name) {
 }
 
 function contentDisposition(filename) {
-  const asciiName = withOutputExtension(filename).replace(/[";]/g, " ");
-  return `attachment; filename="${asciiName}"`;
+  const unicodeName = withOutputExtension(filename);
+  const asciiName = unicodeName
+    .replace(/[^\x20-\x7e]/g, "_")
+    .replace(/[";]/g, " ");
+  const encodedName = encodeURIComponent(unicodeName);
+  return `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`;
 }
 
 function outputDirectoryForDestination(destination) {
@@ -188,8 +191,12 @@ function outputDirectoryForDestination(destination) {
 }
 
 function parseRequestedUrl(value) {
-  if (!value || value.length > 4096) {
-    throw new Error("Missing or oversized url parameter.");
+  if (!value) {
+    throw new Error("Missing url parameter.");
+  }
+
+  if (value.length > 4096) {
+    throw new Error("URL parameter exceeds maximum length.");
   }
 
   const parsed = new URL(value);
@@ -217,7 +224,7 @@ function parseRequestedUrl(value) {
 }
 
 function qualityFromValue(value) {
-  const normalized = String(value || "best").toLowerCase().replace(/p$/, "");
+  const normalized = String(value || "best").toLowerCase().replace(/p\d*$/, "");
   return QUALITY_OPTIONS.has(normalized) ? normalized : "best";
 }
 
@@ -298,6 +305,7 @@ function formatSelectorForMode(mode, quality, canMerge = true) {
 
 function cacheKeyFor(videoUrl) {
   const modeOption = modeOptionFor(DOWNLOAD_MODE);
+  const ffmpeg = resolveFfmpeg();
   return crypto
     .createHash("sha256")
     .update(
@@ -305,7 +313,8 @@ function cacheKeyFor(videoUrl) {
         videoUrl,
         `mode=${DOWNLOAD_MODE}`,
         `quality=${QUALITY}`,
-        `format=${modeOption.cacheProfile}`
+        `format=${modeOption.cacheProfile}`,
+        `ffmpeg=${Boolean(ffmpeg)}`
       ].join("\n")
     )
     .digest("hex");
@@ -323,9 +332,15 @@ function cacheGet(key, resolver) {
     return entry.value;
   }
 
+  const prevCheckedAt = entry.checkedAt;
   entry.checkedAt = now;
-  entry.value = resolver();
-  return entry.value;
+  try {
+    entry.value = resolver();
+    return entry.value;
+  } catch (error) {
+    entry.checkedAt = prevCheckedAt;
+    throw error;
+  }
 }
 
 function resolveCommand(command, args = [], versionFlag = "--version") {
@@ -421,7 +436,7 @@ function resolveBinary(command) {
   });
 
   if (!result.error && result.status === 0) {
-    return String(result.stdout || result.stderr).trim().split(/\s+/)[2] || true;
+    return String(result.stdout || result.stderr).trim().split(/\s+/)[2] || "available";
   }
 
   return null;
@@ -619,10 +634,26 @@ async function findDownloadedFile(workDir, baseName, stdout) {
   }
 
   const entries = await fsp.readdir(workDir);
-  const candidates = entries
-    .filter((entry) => entry.startsWith(baseName))
-    .filter((entry) => !entry.endsWith(".part") && !entry.endsWith(".ytdl"))
-    .map((entry) => path.join(workDir, entry));
+  const candidates = (
+    await Promise.all(
+      entries
+        .filter(
+          (entry) =>
+            entry === `${baseName}${extension}` ||
+            entry.startsWith(`${baseName}.`)
+        )
+        .filter((entry) => !entry.endsWith(".part") && !entry.endsWith(".ytdl"))
+        .map(async (entry) => {
+          const fullPath = path.join(workDir, entry);
+          try {
+            const stat = await fsp.stat(fullPath);
+            return stat.isFile() ? fullPath : null;
+          } catch {
+            return null;
+          }
+        })
+    )
+  ).filter(Boolean);
 
   const preferred = candidates.find((entry) =>
     entry.toLowerCase().endsWith(extension)
@@ -633,8 +664,8 @@ async function findDownloadedFile(workDir, baseName, stdout) {
 async function removeQuietly(filePath) {
   try {
     await fsp.rm(filePath, { recursive: true, force: true });
-  } catch {
-    // Best-effort cleanup only.
+  } catch (error) {
+    console.error(`[ytdlpgrab] remove failed: ${error.message}`);
   }
 }
 
@@ -644,7 +675,7 @@ async function uniqueOutputPath(directory, filename) {
   const base = path.basename(safeName, ext);
 
   for (let index = 0; index < 1000; index += 1) {
-    const suffix = index === 0 ? "" : ` ${index + 1}`;
+    const suffix = index === 0 ? "" : ` ${index}`;
     const candidate = path.join(directory, `${base}${suffix}${ext}`);
     const placeholder = `${candidate}.download`;
 
@@ -703,19 +734,27 @@ async function writeDownloadPlaceholderInfo(
 async function createDownloadPlaceholder(targetPath, videoUrl) {
   const placeholderPath = `${targetPath}.download`;
   await fsp.mkdir(placeholderPath);
-  await writeDownloadPlaceholderInfo(placeholderPath, targetPath, videoUrl, {
-    bytesSoFar: 0,
-    totalBytes: 0
-  });
+  try {
+    await writeDownloadPlaceholderInfo(placeholderPath, targetPath, videoUrl, {
+      bytesSoFar: 0,
+      totalBytes: 0
+    });
+  } catch (error) {
+    await removeQuietly(placeholderPath);
+    throw error;
+  }
 
   return placeholderPath;
 }
 
 function escapePlistString(value) {
   return String(value)
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/'/g, "&apos;")
+    .replace(/"/g, "&quot;");
 }
 
 function bytesFromYtDlpSize(value, unit) {
@@ -769,7 +808,7 @@ function emitDownloadProgress(key, progress) {
     return;
   }
 
-  for (const listener of listeners) {
+  for (const listener of [...listeners]) {
     listener(progress);
   }
 }
@@ -782,10 +821,14 @@ function addDownloadProgressListener(key, listener) {
   }
 
   listeners.add(listener);
+  const capturedKey = key;
   return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0) {
-      progressListeners.delete(key);
+    const current = progressListeners.get(capturedKey);
+    if (current) {
+      current.delete(listener);
+      if (current.size === 0) {
+        progressListeners.delete(capturedKey);
+      }
     }
   };
 }
@@ -870,8 +913,36 @@ async function downloadWithYtDlp(videoUrl, key) {
     });
 
     await fsp.mkdir(CACHE_DIR, { recursive: true });
-    await fsp.rename(downloaded, targetPath);
+    try {
+      await fsp.rename(downloaded, targetPath);
+    } catch (renameError) {
+      if (renameError.code === "EXDEV") {
+        await fsp.copyFile(downloaded, targetPath);
+        await fsp.unlink(downloaded);
+      } else {
+        throw renameError;
+      }
+    }
     console.error(`[ytdlpgrab] cached ${targetPath}`);
+
+    try {
+      const cacheFiles = await fsp.readdir(CACHE_DIR);
+      if (cacheFiles.length > 100) {
+        const entries = await Promise.all(
+          cacheFiles.map(async (name) => {
+            const filePath = path.join(CACHE_DIR, name);
+            const stat = await fsp.stat(filePath);
+            return { name, filePath, mtimeMs: stat.mtimeMs };
+          })
+        );
+        entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+        const toRemove = entries.slice(0, entries.length - 100);
+        await Promise.all(toRemove.map((entry) => removeQuietly(entry.filePath)));
+      }
+    } catch {
+      // Best-effort cleanup only.
+    }
+
     return targetPath;
   } finally {
     await removeQuietly(workDir);
@@ -1167,68 +1238,91 @@ function health() {
 }
 
 const server = http.createServer(async (req, res) => {
-  setCorsHeaders(req, res);
+  try {
+    setCorsHeaders(req, res);
 
-  if (req.method === "OPTIONS") {
-    if (req.headers.origin && !isAllowedExtensionOrigin(req.headers.origin)) {
-      sendError(res, 403, "Origin is not allowed.");
+    if (req.method === "OPTIONS") {
+      if (req.headers.origin && !isAllowedExtensionOrigin(req.headers.origin)) {
+        sendError(res, 403, "Origin is not allowed.");
+        return;
+      }
+
+      res.writeHead(204);
+      res.end();
       return;
     }
 
-    res.writeHead(204);
-    res.end();
-    return;
-  }
+    const url = new URL(req.url, `http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`);
 
-  const url = new URL(req.url, `http://${HOST}:${PORT}`);
-
-  if (req.method === "GET" && url.pathname === "/health") {
-    sendJson(res, 200, health());
-    return;
-  }
-
-  if (url.pathname === "/prepare") {
-    if (req.method !== "POST") {
-      sendMethodNotAllowed(res, ["POST", "OPTIONS"]);
-      return;
-    }
-    if (!requireTrustedAction(req, res)) {
+    if (req.method === "GET" && url.pathname === "/health") {
+      sendJson(res, 200, health());
       return;
     }
 
-    await prepareDownload(res, url.searchParams);
-    return;
-  }
+    if (url.pathname === "/prepare") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res, ["POST", "OPTIONS"]);
+        return;
+      }
+      if (!requireTrustedAction(req, res)) {
+        return;
+      }
 
-  if (url.pathname === "/save") {
-    if (req.method !== "POST") {
-      sendMethodNotAllowed(res, ["POST", "OPTIONS"]);
-      return;
-    }
-    if (!requireTrustedAction(req, res)) {
-      return;
-    }
-
-    await saveDownload(res, url.searchParams);
-    return;
-  }
-
-  if (url.pathname === "/download") {
-    if (req.method !== "GET" && req.method !== "POST") {
-      sendMethodNotAllowed(res, ["GET", "POST", "OPTIONS"]);
-      return;
-    }
-    if (!requireTrustedAction(req, res)) {
+      await prepareDownload(res, url.searchParams);
       return;
     }
 
-    await streamDownload(req, res, url.searchParams);
-    return;
-  }
+    if (url.pathname === "/save") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res, ["POST", "OPTIONS"]);
+        return;
+      }
+      if (!requireTrustedAction(req, res)) {
+        return;
+      }
+
+      await saveDownload(res, url.searchParams);
+      return;
+    }
+
+    if (url.pathname === "/download") {
+      if (req.method !== "GET" && req.method !== "POST") {
+        sendMethodNotAllowed(res, ["GET", "POST", "OPTIONS"]);
+        return;
+      }
+      if (!requireTrustedAction(req, res)) {
+        return;
+      }
+
+      await streamDownload(req, res, url.searchParams);
+      return;
+    }
 
   sendError(res, 404, "Not found.");
+  } catch (error) {
+    console.error(`[ytdlpgrab] request error: ${error.message}`);
+    if (!res.headersSent) {
+      sendError(res, 500, "Internal server error.");
+    }
+  }
 });
 
+server.requestTimeout = 30000;
+server.headersTimeout = 10000;
+server.keepAliveTimeout = 5000;
+
 server.listen(PORT, HOST, () => {
-  console.error(`[ytdlpgrab] helper listening on http://${HOST}:${PORT}`);
+  console.error(`[ytdlpgrab] helper listening on http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`);
+});
+
+resolveYtDlp();
+resolveFfmpeg();
+
+server.on("error", (error) => {
+  console.error(`[ytdlpgrab] server error: ${error.message}`);
+});
+
+server.on("clientError", (error, socket) => {
+  console.error(`[ytdlpgrab] client error: ${error.message}`);
+  socket.destroy(error);
 });

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC_DIR="$ROOT/src"
-VERSION="$(node -p "require('./package.json').version")"
+VERSION="$(cd "$ROOT" && node -p "require('./package.json').version")"
 APP_NAME="YTDLPGrab"
 BUILD_DIR="$ROOT/build/macos"
 APP="$BUILD_DIR/$APP_NAME.app"
 STAGE_DIR="$BUILD_DIR/dmg-stage"
-DMG_PATH="$ROOT/$APP_NAME-$VERSION-arm64.dmg"
+DMG_PATH="$ROOT/$APP_NAME-$VERSION-$(uname -m).dmg"
 EXTENSION_ZIP="$ROOT/ytdlpgrab-extension-$VERSION.zip"
 
 if [[ ! -x "$SRC_DIR/bin/yt-dlp" ]]; then
@@ -37,7 +38,7 @@ YTDLPGrab
 2. Open YTDLPGrab.app. It appears in the menu bar as "YT".
 3. Unzip ytdlpgrab-extension-$VERSION.zip.
 4. In Helium or Chrome, open chrome://extensions, enable Developer mode, and Load unpacked from the unzipped extension folder.
-5. Drag YouTube thumbnails or video titles to the Desktop.
+5. Open a YouTube video and choose "Download current video" from the extension popup, or drag a thumbnail or video title to the Desktop.
 
 If macOS blocks the app because it is unsigned, Control-click the app, choose Open, then confirm Open.
 TXT

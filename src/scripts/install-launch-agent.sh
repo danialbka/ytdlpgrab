@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-NODE_BIN="$(command -v node)"
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+
+if [[ -z "$NODE_BIN" ]]; then
+  echo "node not found in PATH" >&2
+  exit 1
+fi
 PLIST="$HOME/Library/LaunchAgents/com.ytdlpgrab.helper.plist"
 LOG_DIR="$HOME/Library/Logs"
 
@@ -26,6 +32,13 @@ cat > "$PLIST" <<PLIST
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
   <key>StandardOutPath</key>
   <string>$LOG_DIR/ytdlpgrab.log</string>
   <key>StandardErrorPath</key>

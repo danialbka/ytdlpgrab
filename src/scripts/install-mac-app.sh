@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC_DIR="$ROOT/src"
@@ -11,8 +12,13 @@ if [[ ! -d "$BUILT_APP" ]]; then
   "$SRC_DIR/scripts/build-mac-app.sh"
 fi
 
-rm -rf "$DEST_APP"
-cp -R "$BUILT_APP" "$DEST_APP"
+if [[ $EUID -eq 0 ]]; then
+  rm -rf "$DEST_APP"
+  cp -R "$BUILT_APP" "$DEST_APP"
+else
+  sudo rm -rf "$DEST_APP"
+  sudo cp -R "$BUILT_APP" "$DEST_APP"
+fi
 open "$DEST_APP"
 
 echo "Installed $DEST_APP"

@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC_DIR="$ROOT/src"
+VERSION="$(cd "$ROOT" && node -p "require('./package.json').version")"
+BUILD_NUMBER="$(cd "$ROOT" && node -p "require('./package.json').buildNumber")"
 APP_NAME="YTDLPGrab"
 BUILD_DIR="$ROOT/build/macos"
 APP="$BUILD_DIR/$APP_NAME.app"
@@ -114,7 +117,7 @@ bundle_mach_o_dependencies() {
 
   DYLIB_QUEUE="$(mktemp)"
   DYLIB_PROCESSED="$(mktemp)"
-  trap 'rm -f "$DYLIB_QUEUE" "$DYLIB_PROCESSED"' RETURN
+  trap 'rm -f "$DYLIB_QUEUE" "$DYLIB_PROCESSED"' EXIT
 
   non_system_dylib_dependencies "$binary_path" | while IFS= read -r dep_path; do
     enqueue_dylib_dependency "$dep_path"
@@ -147,7 +150,7 @@ bundle_mach_o_dependencies() {
   fi
 
   rm -f "$DYLIB_QUEUE" "$DYLIB_PROCESSED"
-  trap - RETURN
+  trap - EXIT
 }
 
 sign_mach_o_file() {
@@ -172,9 +175,14 @@ sign_bundled_mach_o_files() {
   done
 }
 
+if [[ ! -x "$SRC_DIR/bin/yt-dlp" ]]; then
+  echo "Warning: yt-dlp not found at $SRC_DIR/bin/yt-dlp" >&2
+  echo "The app will lack yt-dlp. Run: npm run install:yt-dlp" >&2
+fi
+
 swiftc \
   -O \
-  -target arm64-apple-macos13.0 \
+  -target "$(uname -m)-apple-macos13.0" \
   -framework AppKit \
   -framework Foundation \
   -framework ServiceManagement \
@@ -183,6 +191,8 @@ swiftc \
   -o "$MACOS_DIR/$APP_NAME"
 
 cp "$SRC_DIR/macos/YTDLPGrab/Info.plist" "$CONTENTS/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$CONTENTS/Info.plist"
+plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$CONTENTS/Info.plist"
 cp "$SRC_DIR/server/index.js" "$RESOURCES_DIR/server/index.js"
 cp -R "$SRC_DIR/extension/." "$RESOURCES_DIR/extension/"
 

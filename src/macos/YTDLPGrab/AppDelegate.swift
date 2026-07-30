@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var healthSummary = "Checking..."
     private var toolSummary = ""
     private var lastError: String?
+    private var restartAfterStop = false
 
     private var helperURL: URL {
         URL(string: "http://127.0.0.1:17427/health")!
@@ -50,8 +51,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var desktopURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Desktop", isDirectory: true)
+        FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Desktop", isDirectory: true)
     }
 
     private var selectedQualityId: String {
@@ -60,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return qualityOptions.contains { $0.id == stored } ? stored : "best"
         }
         set {
+            guard qualityOptions.contains(where: { $0.id == newValue }) else { return }
             UserDefaults.standard.set(newValue, forKey: qualityDefaultsKey)
         }
     }
@@ -74,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return modeOptions.contains { $0.id == stored } ? stored : "youtube"
         }
         set {
+            guard modeOptions.contains(where: { $0.id == newValue }) else { return }
             UserDefaults.standard.set(newValue, forKey: modeDefaultsKey)
         }
     }
@@ -96,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        healthTimer?.invalidate()
         stopServer()
     }
 
@@ -141,14 +146,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             process.executableURL = URL(fileURLWithPath: scriptRunner)
             process.arguments = [serverScriptURL.path]
             process.currentDirectoryURL = resourcesURL
-            process.environment = [
-                "PATH": "\(bundledBinURL.path):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-                "PYTHONPATH": resourcesURL.appendingPathComponent("python").path,
-                "YTDLPGRAB_HOST": "127.0.0.1",
-                "YTDLPGRAB_PORT": "17427",
-                "YTDLPGRAB_QUALITY": selectedQualityId,
-                "YTDLPGRAB_MODE": selectedModeId
-            ]
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = "\(bundledBinURL.path):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            env["PYTHONPATH"] = resourcesURL.appendingPathComponent("python").path
+            env["YTDLPGRAB_HOST"] = "127.0.0.1"
+            env["YTDLPGRAB_PORT"] = "17427"
+            env["YTDLPGRAB_QUALITY"] = selectedQualityId
+            env["YTDLPGRAB_MODE"] = selectedModeId
+            process.environment = env
             process.standardOutput = outputHandle
             process.standardError = errorHandle
             process.terminationHandler = { [weak self] process in
@@ -160,18 +165,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.lastError = process.terminationStatus == 0
                             ? nil
                             : "Helper exited with code \(process.terminationStatus)."
-                        self.refreshHealth()
+                        let shouldRestart = self.restartAfterStop
+                        self.restartAfterStop = false
+                        if shouldRestart {
+                            self.startServer()
+                        } else {
+                            self.refreshHealth()
+                        }
                     }
                 }
             }
 
             try process.run()
-            appendDiagnostic("server process launched using \(scriptRunner)")
             serverProcess = process
+            appendDiagnostic("server process launched using \(scriptRunner)")
             lastError = nil
             healthSummary = "Starting..."
             rebuildMenu()
         } catch {
+            serverProcess = nil
             lastError = error.localizedDescription
             appendDiagnostic("failed to launch server: \(error.localizedDescription)")
             closeLogHandles()
@@ -180,10 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func stopServer() {
-        serverProcess?.terminate()
-        serverProcess = nil
-        closeLogHandles()
-        refreshHealth()
+        requestServerStop(restart: false)
     }
 
     @objc private func toggleStartAtLogin() {
@@ -247,13 +256,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         } catch {
             lastError = error.localizedDescription
+            rebuildMenu()
         }
         NSWorkspace.shared.open(logsDirectoryURL)
     }
 
     @objc private func openExtensionFolder() {
         let extensionURL = resourcesURL.appendingPathComponent("extension", isDirectory: true)
-        NSWorkspace.shared.open(extensionURL)
+        if !NSWorkspace.shared.open(extensionURL) {
+            appendDiagnostic("failed to open extension folder at \(extensionURL.path)")
+        }
     }
 
     @objc private func quitApp() {
@@ -402,17 +414,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func restartServerIfNeeded() {
-        if serverProcess == nil {
-            rebuildMenu()
+        if serverProcess != nil {
+            requestServerStop(restart: true)
+        } else {
+            startServer()
+        }
+    }
+
+    private func requestServerStop(restart: Bool) {
+        guard let process = serverProcess else {
+            restartAfterStop = false
+            closeLogHandles()
+            if restart {
+                startServer()
+            } else {
+                healthSummary = "Stopped"
+                refreshHealth()
+            }
             return
         }
 
-        stopServer()
-        healthSummary = "Restarting..."
+        restartAfterStop = restart
+        healthSummary = restart ? "Restarting..." : "Stopping..."
         rebuildMenu()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            self?.startServer()
-        }
+        process.terminate()
     }
 
     private func startAtLoginState() -> NSControl.StateValue {
@@ -427,8 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bundledBinURL.appendingPathComponent("bun").path,
             bundledBinURL.appendingPathComponent("node").path,
             "/opt/homebrew/bin/node",
-            "/usr/local/bin/node",
-            "/usr/bin/node"
+            "/usr/local/bin/node"
         ] where FileManager.default.isExecutableFile(atPath: candidate) {
             return candidate
         }
@@ -454,15 +478,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 at: logsDirectoryURL,
                 withIntermediateDirectories: true
             )
-            let line = "[app] \(Date()) \(message)\n"
+            let formatter = ISO8601DateFormatter()
+            let line = "[app] \(formatter.string(from: Date())) \(message)\n"
             let url = logsDirectoryURL.appendingPathComponent("app.log")
-            if !FileManager.default.fileExists(atPath: url.path) {
-                FileManager.default.createFile(atPath: url.path, contents: nil)
-            }
+            ensureFileExists(url)
             let handle = try FileHandle(forWritingTo: url)
-            handle.seekToEndOfFile()
+            try handle.seekToEnd()
             if let data = line.data(using: .utf8) {
-                handle.write(data)
+                try handle.write(contentsOf: data)
             }
             try handle.close()
         } catch {

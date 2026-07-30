@@ -75,10 +75,10 @@
       .replace(/[\u0000-\u001f\u007f]/g, " ")
       .replace(/[\\/:*?"<>|#%{}$!`+=@]/g, " ")
       .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 90);
+      .trim();
+    const sliced = Array.from(text).slice(0, 90).join('');
 
-    return text || "youtube-video";
+    return sliced || "youtube-video";
   }
 
   function titleFromAnchor(anchor) {
@@ -161,6 +161,18 @@
     return isThumbnailVideoAnchor(anchor) || isTitleVideoAnchor(anchor);
   }
 
+  function queryAnchorInContainer(container) {
+    try {
+      return container?.querySelector?.("a[href]");
+    } catch {
+      const root = container?.getRootNode?.();
+      if (root instanceof ShadowRoot) {
+        return root.host?.querySelector?.("a[href]");
+      }
+      return null;
+    }
+  }
+
   function videoAnchorFromElement(element) {
     if (!element || element.nodeType !== Node.ELEMENT_NODE) {
       return null;
@@ -172,7 +184,7 @@
     }
 
     const thumbnailContainer = element.closest?.(THUMBNAIL_CONTAINER_SELECTOR);
-    const containerAnchor = thumbnailContainer?.querySelector?.("a[href]");
+    const containerAnchor = queryAnchorInContainer(thumbnailContainer);
     if (containerAnchor && isHandledVideoAnchor(containerAnchor)) {
       return containerAnchor;
     }
@@ -206,7 +218,7 @@
 
   function findVideoAnchorInPath(event) {
     const path = typeof event.composedPath === "function" ? event.composedPath() : [];
-    for (const node of [event.target, ...path]) {
+    for (const node of path) {
       if (!node || node.nodeType !== Node.ELEMENT_NODE) {
         continue;
       }
@@ -239,14 +251,16 @@
         destination: "desktop"
       },
       () => {
-        // The helper popup reports connection state; avoid interrupting the drag.
-        void chrome.runtime.lastError;
+        if (chrome.runtime.lastError) {
+          console.error("ytdlpgrab: save error", chrome.runtime.lastError);
+        }
       }
     );
   }
 
   function capturePointerTarget(event) {
     if (event.button !== undefined && event.button !== 0) {
+      pendingPointerAnchor = null;
       return;
     }
 
@@ -314,7 +328,8 @@
     const elapsedMs = Date.now() - drag.startedAt;
     if (
       event.dataTransfer?.dropEffect === "none" &&
-      (!drag.leftDocument || elapsedMs < MIN_DRAG_SAVE_MS)
+      !drag.leftDocument &&
+      elapsedMs < MIN_DRAG_SAVE_MS
     ) {
       return;
     }
@@ -371,15 +386,17 @@
   function markAnchors(root = document) {
     const marked = matchingElements(root, `.${READY_CLASS}`);
     for (const anchor of marked) {
-      if (!isHandledVideoAnchor(anchor)) {
+      if (!isHandledVideoAnchor(anchor) && anchor.classList.contains(READY_CLASS)) {
         anchor.classList.remove(READY_CLASS);
       }
     }
 
     for (const anchor of collectHandledAnchors(root)) {
       if (isHandledVideoAnchor(anchor)) {
-        anchor.classList.add(READY_CLASS);
-        anchor.draggable = true;
+        if (!anchor.classList.contains(READY_CLASS)) {
+          anchor.classList.add(READY_CLASS);
+          anchor.draggable = true;
+        }
 
         for (const image of anchor.querySelectorAll("img")) {
           image.draggable = false;
@@ -407,7 +424,7 @@
         continue;
       }
 
-      for (const node of mutation.addedNodes || []) {
+      for (const node of [...(mutation.addedNodes || []), ...(mutation.removedNodes || [])]) {
         if (node.nodeType === Node.ELEMENT_NODE) {
           roots.add(scanRootFor(node));
         }
@@ -429,6 +446,32 @@
       if (timer) {
         return;
       }
+      timer = window.requestAnimationFrame(() => {
+        timer = null;
+        const pendingRoots = Array.from(roots);
+        roots.clear();
+
+        for (const root of pendingRoots) {
+          if (root === document || root.isConnected) {
+            markAnchors(root);
+          }
+        }
+      });
+    };
+  })();
+
+  const scheduleMarkAnchorsAria = (() => {
+    let timer = null;
+    const roots = new Set();
+
+    return (nextRoots) => {
+      for (const root of nextRoots || [document]) {
+        roots.add(root);
+      }
+
+      if (timer) {
+        return;
+      }
       timer = window.setTimeout(() => {
         timer = null;
         const pendingRoots = Array.from(roots);
@@ -439,7 +482,7 @@
             markAnchors(root);
           }
         }
-      }, 250);
+      }, 500);
     };
   })();
 
@@ -459,8 +502,20 @@
   });
   observer.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["aria-label", "href", "title"],
+    attributeFilter: ["href", "title", "class", "hidden"],
     childList: true,
+    subtree: true
+  });
+
+  const ariaObserver = new MutationObserver((mutations) => {
+    const roots = mutationRoots(mutations);
+    if (roots.size > 0) {
+      scheduleMarkAnchorsAria(roots);
+    }
+  });
+  ariaObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["aria-label"],
     subtree: true
   });
 })();
