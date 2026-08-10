@@ -2,7 +2,7 @@
 
 ![ytdlpgrab banner](src/assets/ytdlpgrab-banner.png)
 
-Download the YouTube video you are currently watching, or drag a thumbnail or video title out of Helium or Chrome. A small local macOS helper saves the matching video as an MP4 on your Desktop.
+Download the YouTube video you are currently watching and choose where to save it, or drag a thumbnail or video title out of Helium or Chrome. A small local macOS helper prepares the matching video as an MP4.
 
 The goal is a Mac-like "grab the media" flow: start a drag from a YouTube thumbnail or title, drop it on the Desktop, and ytdlpgrab creates the MP4 there. A temporary `.mp4.download` item appears while the helper is fetching a new video, then it is replaced by the finished MP4.
 
@@ -11,7 +11,7 @@ The goal is a Mac-like "grab the media" flow: start a drag from a YouTube thumbn
 - Menu-bar macOS app with a tiny `YT` status item.
 - Local-only helper server on `127.0.0.1:17427`.
 - Browser extension for YouTube thumbnail and video-title drags.
-- One-click download for the currently watched YouTube video, Short, or live stream.
+- One-click download for the currently watched YouTube video, Short, or live stream, with Chromium's Save As dialog.
 - No visible badge or overlay on YouTube pages.
 - Mode menu: YouTube Video MP4 or Audio M4A.
 - Quality menu: Best, 4K, 1440p, 1080p, 720p, 480p, or 360p.
@@ -24,7 +24,7 @@ The goal is a Mac-like "grab the media" flow: start a drag from a YouTube thumbn
 
 Helium and Chromium can block old-style `DownloadURL` drag payloads with a "Blocked by your organisation" message. ytdlpgrab avoids browser-managed downloads. The extension detects a completed thumbnail or title drag, sends the exact YouTube video URL to the local helper, and the helper writes the MP4 directly to the Desktop.
 
-The extension popup can download the active YouTube video directly. Dragging still only accepts actual YouTube video thumbnail/title links; if a drag target is ambiguous, it does nothing instead of guessing from the current page URL.
+The extension popup can download the active YouTube video directly. Chromium opens its Save As dialog so you can choose the filename and destination. Dragging still only accepts actual YouTube video thumbnail/title links; if a drag target is ambiguous, it does nothing instead of guessing from the current page URL.
 
 Each drag starts a background save request and returns immediately. Drag several different videos one by one and the helper will run the downloads in parallel instead of waiting for the previous one to finish.
 
@@ -49,7 +49,7 @@ Open the DMG and drag `YTDLPGrab.app` into Applications. Then unzip the extensio
 3. Click **Load unpacked**.
 4. Select the unzipped extension folder.
 
-Open a YouTube video and choose **Download current video** from the extension popup. You can also drag a thumbnail or video title and drop it on your Desktop.
+Open a YouTube video and choose **Download current video** from the extension popup. Choose the destination in Chromium's Save As dialog. You can also drag a thumbnail or video title and drop it on your Desktop.
 
 If macOS blocks the app because it is unsigned, Control-click `YTDLPGrab.app`, choose **Open**, then confirm **Open**.
 
@@ -131,7 +131,7 @@ Open the menu-bar app, then choose **Open Extension Folder** from the `YT` menu.
 3. Click **Load unpacked**.
 4. Select the `src/extension` folder.
 
-Open a YouTube video and choose **Download current video** from the extension popup, or drag a thumbnail or video title and drop it on your Desktop. The helper writes the file directly to `~/Desktop`.
+Open a YouTube video and choose **Download current video** from the extension popup, then choose the filename and destination in Chromium's Save As dialog. You can also drag a thumbnail or video title and drop it on your Desktop; that drag flow still writes directly to `~/Desktop`.
 
 ## Menu Bar Controls
 

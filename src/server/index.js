@@ -1097,24 +1097,30 @@ async function streamDownload(req, res, query) {
   const filename = withOutputExtension(query.get("name") || "youtube-video");
   const modeOption = modeOptionFor(DOWNLOAD_MODE);
 
+  if (!resolveYtDlp()) {
+    sendError(
+      res,
+      503,
+      "yt-dlp is not installed.",
+      "Run npm run install:yt-dlp or brew install yt-dlp ffmpeg."
+    );
+    return;
+  }
+
+  const download = ensureDownloaded(videoUrl);
+
+  res.writeHead(200, {
+    "content-type": modeOption.contentType,
+    "content-disposition": contentDisposition(filename),
+    "cache-control": "private, max-age=31536000"
+  });
+  res.flushHeaders();
+
   try {
-    const filePath = await ensureDownloaded(videoUrl);
-    const stat = await fsp.stat(filePath);
-
-    res.writeHead(200, {
-      "content-type": modeOption.contentType,
-      "content-disposition": contentDisposition(filename),
-      "content-length": stat.size,
-      "cache-control": "private, max-age=31536000"
-    });
-
+    const filePath = await download;
     await pipeline(fs.createReadStream(filePath), res);
   } catch (error) {
-    if (!res.headersSent) {
-      sendError(res, 500, "Download failed.", error.message);
-    } else {
-      res.destroy(error);
-    }
+    res.destroy(error);
   }
 }
 

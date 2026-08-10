@@ -131,6 +131,38 @@
     }
   }
 
+  function startBrowserDownload(video) {
+    return new Promise((resolve, reject) => {
+      chrome.downloads.download(
+        {
+          url: helperUrl("/download", video.videoUrl, video.name),
+          saveAs: true,
+          conflictAction: "uniquify",
+          headers: [
+            {
+              name: TRUSTED_ACTION_HEADER,
+              value: TRUSTED_ACTION_VALUE
+            }
+          ]
+        },
+        (downloadId) => {
+          const error = chrome.runtime.lastError;
+          if (error) {
+            reject(new Error(error.message));
+            return;
+          }
+
+          if (!Number.isInteger(downloadId)) {
+            reject(new Error("Chromium did not start the download."));
+            return;
+          }
+
+          resolve(downloadId);
+        }
+      );
+    });
+  }
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || typeof message !== "object") {
       return false;
@@ -151,13 +183,8 @@
             return { ok: true, video };
           }
 
-          const body = await postHelper(
-            "/save",
-            video.videoUrl,
-            video.name,
-            "desktop"
-          );
-          return { ok: true, video, body };
+          const downloadId = await startBrowserDownload(video);
+          return { ok: true, video, downloadId };
         })
         .then((response) => {
           try {

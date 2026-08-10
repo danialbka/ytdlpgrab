@@ -188,6 +188,21 @@ test("helper validates requests and queues one current-video save", async () => 
       /filename="Caf_ fixture\.mp4"; filename\*=UTF-8''Caf%C3%A9%20fixture\.mp4/
     );
     assert.equal(await downloaded.text(), "fixture-video");
+
+    const uncachedUrl = new URL("/download", fixture.origin);
+    uncachedUrl.searchParams.set(
+      "url",
+      "https://www.youtube.com/watch?v=pickerFixture456"
+    );
+    uncachedUrl.searchParams.set("name", "Picker fixture");
+    const responseStartedAt = Date.now();
+    const uncachedDownload = await fetch(uncachedUrl, { headers });
+    assert.equal(uncachedDownload.status, 200);
+    assert.ok(
+      Date.now() - responseStartedAt < 500,
+      "download headers should arrive before media preparation finishes"
+    );
+    assert.equal(await uncachedDownload.text(), "fixture-video");
   } finally {
     await stopFixtureServer(fixture);
   }

@@ -136,7 +136,7 @@
 
       currentVideo = response.video;
       currentDetail.textContent = currentVideo.name;
-      setActionStatus("success", "Download started. It will appear on your Desktop.");
+      setActionStatus("success", "Choose where to save the file in the Chromium dialog.");
     } catch (error) {
       setActionStatus("error", error.message);
     } finally {

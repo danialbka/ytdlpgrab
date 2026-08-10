@@ -37,7 +37,7 @@ globalThis.chrome = {
           callback({
             ok: true,
             video,
-            body: { ok: true, active: true, destination: "desktop" }
+            downloadId: 42
           });
         }
       }, 40);

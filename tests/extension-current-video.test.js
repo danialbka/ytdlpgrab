@@ -12,6 +12,7 @@ const backgroundSource = fs.readFileSync(
 function loadBackground(activeTab) {
   let messageListener;
   const fetchCalls = [];
+  const downloadCalls = [];
   const chrome = {
     runtime: {
       id: "test-extension-id",
@@ -36,6 +37,12 @@ function loadBackground(activeTab) {
           "lastFocusedWindow"
         ]);
         callback(activeTab ? [activeTab] : []);
+      }
+    },
+    downloads: {
+      download(options, callback) {
+        downloadCalls.push(options);
+        callback(42);
       }
     }
   };
@@ -75,7 +82,7 @@ function loadBackground(activeTab) {
     });
   }
 
-  return { fetchCalls, send };
+  return { downloadCalls, fetchCalls, send };
 }
 
 const popupSender = {
@@ -104,7 +111,7 @@ test("reports the currently watched video from the active YouTube tab", async ()
   assert.equal(background.fetchCalls.length, 0);
 });
 
-test("queues the current video through the existing Desktop save endpoint", async () => {
+test("opens Chromium Save As for the current video", async () => {
   const background = loadBackground({
     title: "A useful Short - YouTube",
     url: "https://www.youtube.com/shorts/short456?feature=share"
@@ -117,20 +124,24 @@ test("queues the current video through the existing Desktop save endpoint", asyn
 
   assert.equal(response.ok, true);
   assert.equal(response.video.videoUrl, "https://www.youtube.com/watch?v=short456");
-  assert.equal(background.fetchCalls.length, 1);
+  assert.equal(response.downloadId, 42);
+  assert.equal(background.fetchCalls.length, 0);
+  assert.equal(background.downloadCalls.length, 1);
 
-  const request = background.fetchCalls[0];
+  const request = background.downloadCalls[0];
   const helperUrl = new URL(request.url);
   assert.equal(helperUrl.origin, "http://127.0.0.1:17427");
-  assert.equal(helperUrl.pathname, "/save");
-  assert.equal(helperUrl.searchParams.get("destination"), "desktop");
+  assert.equal(helperUrl.pathname, "/download");
   assert.equal(helperUrl.searchParams.get("name"), "A useful Short");
   assert.equal(
     helperUrl.searchParams.get("url"),
     "https://www.youtube.com/watch?v=short456"
   );
-  assert.equal(request.options.method, "POST");
-  assert.equal(request.options.headers["x-ytdlpgrab-extension"], "1");
+  assert.equal(request.saveAs, true);
+  assert.equal(request.conflictAction, "uniquify");
+  assert.deepEqual(JSON.parse(JSON.stringify(request.headers)), [
+    { name: "x-ytdlpgrab-extension", value: "1" }
+  ]);
 });
 
 test("rejects non-video tabs and messages from non-extension pages", async () => {
