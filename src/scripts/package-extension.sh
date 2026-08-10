@@ -16,6 +16,7 @@ rm -f "$ZIP_PATH"
     content.js \
     content.css \
     popup.html \
+    popup.css \
     popup.js \
     icons \
     -x "*.DS_Store" >/dev/null

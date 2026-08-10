@@ -82,6 +82,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.url === "/popup.css") {
+    send(
+      res,
+      200,
+      "text/css; charset=utf-8",
+      fs.readFileSync(path.join(extensionRoot, "popup.css"))
+    );
+    return;
+  }
+
   res.writeHead(404);
   res.end();
 });

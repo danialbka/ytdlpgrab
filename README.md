@@ -116,8 +116,8 @@ npm run package:release
 This creates:
 
 ```sh
-YTDLPGrab-0.1.3-arm64.dmg
-ytdlpgrab-extension-0.1.3.zip
+YTDLPGrab-0.1.5-arm64.dmg
+ytdlpgrab-extension-0.1.5.zip
 ```
 
 `npm run package:dmg` builds only the DMG. `npm run package:extension` builds only the extension zip.
