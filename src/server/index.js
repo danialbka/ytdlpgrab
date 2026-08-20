@@ -30,6 +30,9 @@ const DOWNLOAD_TIMEOUT_MS = positiveIntegerFromValue(
 const TOOL_CHECK_TIMEOUT_MS = positiveIntegerFromValue(
   process.env.YTDLPGRAB_TOOL_CHECK_TIMEOUT_MS, 3000
 );
+const YT_DLP_HELP_TIMEOUT_MS = positiveIntegerFromValue(
+  process.env.YTDLPGRAB_YTDLP_HELP_TIMEOUT_MS, 30 * 1000
+);
 const TOOL_CACHE_TTL_MS = positiveIntegerFromValue(
   process.env.YTDLPGRAB_TOOL_CACHE_TTL_MS, 30 * 1000
 );
@@ -519,7 +522,7 @@ function ytDlpSupportsJavaScriptRuntimes(ytDlp) {
     const result = spawnSync(ytDlp.command, [...ytDlp.args, "--help"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: TOOL_CHECK_TIMEOUT_MS
+      timeout: YT_DLP_HELP_TIMEOUT_MS
     });
 
     if (result.error || result.status !== 0) {

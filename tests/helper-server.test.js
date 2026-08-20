@@ -43,6 +43,7 @@ async function startFixtureServer() {
     path.join(os.tmpdir(), "ytdlpgrab-helper-test-")
   );
   const fakeYtDlp = path.join(fixtureRoot, "fake-yt-dlp");
+  const invocationLog = path.join(fixtureRoot, "yt-dlp-invocations.jsonl");
   const cacheDir = path.join(fixtureRoot, "cache");
   const desktopDir = path.join(fixtureRoot, "Desktop");
   const port = await unusedPort();
@@ -53,24 +54,30 @@ async function startFixtureServer() {
 const fs = require("node:fs");
 const path = require("node:path");
 
+fs.appendFileSync(
+  process.env.FIXTURE_INVOCATION_LOG,
+  JSON.stringify(process.argv.slice(2)) + "\\n"
+);
+
 if (process.argv.includes("--version")) {
   console.log("2026.fixture");
   process.exit(0);
 }
 if (process.argv.includes("--help")) {
-  console.log("fixture downloader");
-  process.exit(0);
+  setTimeout(() => {
+    console.log("fixture downloader --js-runtimes RUNTIME[:PATH]");
+  }, Number(process.env.FIXTURE_HELP_DELAY_MS || 0));
+} else {
+  const outputIndex = process.argv.indexOf("-o");
+  const outputTemplate = process.argv[outputIndex + 1];
+  const outputPath = outputTemplate.replace("%(ext)s", "mp4");
+  setTimeout(() => {
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, "fixture-video");
+    process.stderr.write("[download] 100.0% of 13 B\\n");
+    process.stdout.write(outputPath + "\\n");
+  }, 600);
 }
-
-const outputIndex = process.argv.indexOf("-o");
-const outputTemplate = process.argv[outputIndex + 1];
-const outputPath = outputTemplate.replace("%(ext)s", "mp4");
-setTimeout(() => {
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.writeFileSync(outputPath, "fixture-video");
-  process.stderr.write("[download] 100.0% of 13 B\\n");
-  process.stdout.write(outputPath + "\\n");
-}, 600);
 `,
     { mode: 0o755 }
   );
@@ -80,6 +87,8 @@ setTimeout(() => {
     env: {
       ...process.env,
       HOME: fixtureRoot,
+      FIXTURE_HELP_DELAY_MS: "3200",
+      FIXTURE_INVOCATION_LOG: invocationLog,
       YT_DLP_PATH: fakeYtDlp,
       YTDLPGRAB_CACHE_DIR: cacheDir,
       YTDLPGRAB_PORT: String(port),
@@ -111,6 +120,7 @@ setTimeout(() => {
     child,
     desktopDir,
     fixtureRoot,
+    invocationLog,
     origin,
     stderr: () => stderr
   };
@@ -167,7 +177,7 @@ test("helper validates requests and queues one current-video save", async () => 
     const savedFiles = await waitFor(async () => {
       const files = await fsp.readdir(fixture.desktopDir);
       return files.includes("Café fixture.mp4") ? files : null;
-    }, `Desktop save did not finish: ${fixture.stderr()}`);
+    }, `Desktop save did not finish: ${fixture.stderr()}`, 15000);
 
     assert.deepEqual(savedFiles, ["Café fixture.mp4"]);
     assert.equal(
@@ -177,6 +187,19 @@ test("helper validates requests and queues one current-video save", async () => 
       ),
       "fixture-video"
     );
+
+    const invocations = (await fsp.readFile(fixture.invocationLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const downloadInvocation = invocations.find((args) => args.includes("-o"));
+    assert.ok(downloadInvocation, "fixture yt-dlp download was not invoked");
+    const jsRuntimeIndex = downloadInvocation.indexOf("--js-runtimes");
+    assert.ok(
+      jsRuntimeIndex >= 0,
+      "a slow yt-dlp capability check must still enable JavaScript runtimes"
+    );
+    assert.match(downloadInvocation[jsRuntimeIndex + 1], /^(node|bun):/);
 
     const downloadUrl = new URL("/download", fixture.origin);
     downloadUrl.searchParams.set("url", videoUrl);

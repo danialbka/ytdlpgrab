@@ -9,7 +9,7 @@ API_URL="https://api.github.com/repos/yt-dlp/yt-dlp-nightly-builds/releases/late
 
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64|Darwin-aarch64)
-    ASSET_NAME="${YTDLPGRAB_YTDLP_ASSET:-yt-dlp_macos_arm64}"
+    ASSET_NAME="${YTDLPGRAB_YTDLP_ASSET:-yt-dlp_macos}"
     ;;
   Darwin-*)
     ASSET_NAME="${YTDLPGRAB_YTDLP_ASSET:-yt-dlp_macos}"
