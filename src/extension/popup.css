@@ -15,6 +15,36 @@ h1 {
   margin: 0 0 10px;
 }
 
+.update-banner {
+  align-items: center;
+  background: color-mix(in srgb, #ff0033 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ff0033 45%, transparent);
+  border-radius: 8px;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 6px;
+  justify-content: space-between;
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  width: 100%;
+}
+
+.update-banner:hover:not(:disabled) {
+  background: color-mix(in srgb, #ff0033 20%, transparent);
+}
+
+.update-banner[hidden] {
+  display: none;
+}
+
+.update-banner-cta {
+  color: #ff0033;
+}
+
 .status {
   align-items: center;
   display: flex;
@@ -102,4 +132,51 @@ button:disabled {
 
 .action-status.success {
   color: #10b981;
+}
+
+.download-progress {
+  margin-top: 10px;
+}
+
+.download-progress[hidden] {
+  display: none;
+}
+
+.progress-bar {
+  background: color-mix(in srgb, CanvasText 14%, transparent);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.progress-fill {
+  background: #ff0033;
+  border-radius: 999px;
+  height: 100%;
+  transition: width 0.3s ease;
+  width: 0%;
+}
+
+.progress-bar.indeterminate .progress-fill {
+  transition: none;
+  width: 40%;
+  animation: progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  from {
+    transform: translateX(-110%);
+  }
+
+  to {
+    transform: translateX(280%);
+  }
+}
+
+.progress-label {
+  color: color-mix(in srgb, CanvasText 66%, transparent);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 6px 0 0;
 }

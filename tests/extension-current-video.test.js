@@ -13,6 +13,9 @@ function loadBackground(activeTab) {
   let messageListener;
   const fetchCalls = [];
   const downloadCalls = [];
+  const storageData = new Map();
+  const badgeCalls = [];
+  const alarmsCreated = [];
   const chrome = {
     runtime: {
       id: "test-extension-id",
@@ -44,6 +47,30 @@ function loadBackground(activeTab) {
         downloadCalls.push(options);
         callback(42);
       }
+    },
+    alarms: {
+      onAlarm: { addListener() {} },
+      create(name, schedule) {
+        alarmsCreated.push({ name, schedule });
+      }
+    },
+    storage: {
+      local: {
+        async get(key) {
+          return storageData.has(key) ? { [key]: storageData.get(key) } : {};
+        },
+        async set(values) {
+          for (const [key, value] of Object.entries(values)) {
+            storageData.set(key, value);
+          }
+        }
+      }
+    },
+    action: {
+      setBadgeText(options) {
+        badgeCalls.push(options.text);
+      },
+      setBadgeBackgroundColor() {}
     }
   };
 
@@ -82,7 +109,7 @@ function loadBackground(activeTab) {
     });
   }
 
-  return { downloadCalls, fetchCalls, send };
+  return { downloadCalls, fetchCalls, send, storageData, badgeCalls, alarmsCreated };
 }
 
 const popupSender = {
@@ -111,7 +138,7 @@ test("reports the currently watched video from the active YouTube tab", async ()
   assert.equal(background.fetchCalls.length, 0);
 });
 
-test("opens Chromium Save As for the current video", async () => {
+test("prepares the helper download for the current video", async () => {
   const background = loadBackground({
     title: "A useful Short - YouTube",
     url: "https://www.youtube.com/shorts/short456?feature=share"
@@ -124,6 +151,41 @@ test("opens Chromium Save As for the current video", async () => {
 
   assert.equal(response.ok, true);
   assert.equal(response.video.videoUrl, "https://www.youtube.com/watch?v=short456");
+  assert.equal(response.cached, false);
+  assert.equal(response.active, true);
+  assert.equal(background.downloadCalls.length, 0);
+  assert.equal(background.fetchCalls.length, 1);
+
+  const preparedUrl = new URL(background.fetchCalls[0].url);
+  assert.equal(preparedUrl.origin, "http://127.0.0.1:17427");
+  assert.equal(preparedUrl.pathname, "/prepare");
+  assert.equal(preparedUrl.searchParams.get("name"), "A useful Short");
+  assert.equal(
+    preparedUrl.searchParams.get("url"),
+    "https://www.youtube.com/watch?v=short456"
+  );
+  assert.equal(
+    background.fetchCalls[0].options.headers["x-ytdlpgrab-extension"],
+    "1"
+  );
+});
+
+test("opens Chromium Save As on demand with the requested video", async () => {
+  const background = loadBackground({
+    title: "A useful Short - YouTube",
+    url: "https://www.youtube.com/shorts/short456?feature=share"
+  });
+
+  const response = await background.send(
+    {
+      type: "ytdlpgrab.start-browser-download",
+      videoUrl: "https://www.youtube.com/watch?v=short456",
+      name: "A useful Short"
+    },
+    popupSender
+  );
+
+  assert.equal(response.ok, true);
   assert.equal(response.downloadId, 42);
   assert.equal(background.fetchCalls.length, 0);
   assert.equal(background.downloadCalls.length, 1);
@@ -142,6 +204,44 @@ test("opens Chromium Save As for the current video", async () => {
   assert.deepEqual(JSON.parse(JSON.stringify(request.headers)), [
     { name: "x-ytdlpgrab-extension", value: "1" }
   ]);
+
+  const rejected = await background.send(
+    {
+      type: "ytdlpgrab.start-browser-download",
+      videoUrl: "https://example.com/watch?v=nope",
+      name: "Nope"
+    },
+    popupSender
+  );
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /Invalid or missing video URL/);
+  assert.equal(background.downloadCalls.length, 1);
+});
+
+test("checks for updates through the helper and stores the result", async () => {
+  const background = loadBackground({
+    title: "A useful video - YouTube",
+    url: "https://www.youtube.com/watch?v=abc123"
+  });
+
+  const response = await background.send(
+    { type: "ytdlpgrab.update-check" },
+    popupSender
+  );
+
+  assert.equal(response.ok, true);
+  assert.equal(response.update.ok, true);
+
+  const checkUrl = new URL(background.fetchCalls[0].url);
+  assert.equal(checkUrl.origin, "http://127.0.0.1:17427");
+  assert.equal(checkUrl.pathname, "/update/check");
+
+  const stored = background.storageData.get("updateCheck");
+  assert.ok(stored?.checkedAt > 0);
+  assert.equal(stored.result.ok, true);
+
+  // An update-available result flips the badge on; a clean result clears it.
+  assert.equal(background.badgeCalls.at(-1), "");
 });
 
 test("rejects non-video tabs and messages from non-extension pages", async () => {

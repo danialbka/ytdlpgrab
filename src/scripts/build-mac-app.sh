@@ -195,6 +195,7 @@ plutil -replace CFBundleShortVersionString -string "$VERSION" "$CONTENTS/Info.pl
 plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$CONTENTS/Info.plist"
 cp "$SRC_DIR/server/index.js" "$RESOURCES_DIR/server/index.js"
 cp -R "$SRC_DIR/extension/." "$RESOURCES_DIR/extension/"
+printf '%s' "$VERSION" > "$RESOURCES_DIR/version"
 
 if [[ -f "$SRC_DIR/macos/YTDLPGrab/AppIcon.icns" ]]; then
   cp "$SRC_DIR/macos/YTDLPGrab/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"

@@ -38,7 +38,7 @@ async function waitFor(predicate, message, timeoutMs = 5000) {
   throw new Error(message);
 }
 
-async function startFixtureServer() {
+async function startFixtureServer(fixtureOverrides = {}) {
   const fixtureRoot = await fsp.mkdtemp(
     path.join(os.tmpdir(), "ytdlpgrab-helper-test-")
   );
@@ -92,7 +92,8 @@ if (process.argv.includes("--help")) {
       YT_DLP_PATH: fakeYtDlp,
       YTDLPGRAB_CACHE_DIR: cacheDir,
       YTDLPGRAB_PORT: String(port),
-      YTDLPGRAB_TOOL_CACHE_TTL_MS: "100"
+      YTDLPGRAB_TOOL_CACHE_TTL_MS: "100",
+      ...fixtureOverrides.env
     },
     stdio: ["ignore", "ignore", "pipe"]
   });
@@ -228,5 +229,124 @@ test("helper validates requests and queues one current-video save", async () => 
     assert.equal(await uncachedDownload.text(), "fixture-video");
   } finally {
     await stopFixtureServer(fixture);
+  }
+});
+
+test("reports download progress and serves cached files with a known length", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const headers = { "x-ytdlpgrab-extension": "1" };
+    const videoUrl = "https://www.youtube.com/watch?v=progressFixture789";
+
+    const progressUrl = new URL("/progress", fixture.origin);
+    progressUrl.searchParams.set("url", videoUrl);
+
+    const idle = await (await fetch(progressUrl)).json();
+    assert.equal(idle.ok, true);
+    assert.equal(idle.cached, false);
+    assert.equal(idle.active, false);
+
+    const prepareUrl = new URL("/prepare", fixture.origin);
+    prepareUrl.searchParams.set("url", videoUrl);
+    const prepared = await fetch(prepareUrl, { method: "POST", headers });
+    assert.equal(prepared.status, 202);
+
+    const active = await (await fetch(progressUrl)).json();
+    assert.equal(active.ok, true);
+    assert.equal(active.cached, false);
+    assert.equal(active.active, true);
+
+    const done = await waitFor(async () => {
+      const progress = await (await fetch(progressUrl)).json();
+      return progress.cached ? progress : null;
+    }, "download never reported cached", 15000);
+
+    assert.equal(done.percent, 100);
+    assert.equal(done.totalBytes, 13);
+    assert.equal(done.bytesSoFar, 13);
+
+    const downloadUrl = new URL("/download", fixture.origin);
+    downloadUrl.searchParams.set("url", videoUrl);
+    const downloaded = await fetch(downloadUrl, { headers });
+    assert.equal(downloaded.status, 200);
+    assert.equal(downloaded.headers.get("content-length"), "13");
+    assert.equal(await downloaded.text(), "fixture-video");
+  } finally {
+    await stopFixtureServer(fixture);
+  }
+});
+
+test("update check compares the running version against GitHub releases", async () => {
+  const releasePayload = {
+    tag_name: "v9.9.9",
+    html_url: "https://github.com/danialbka/ytdlpgrab/releases/tag/v9.9.9",
+    published_at: "2026-01-01T00:00:00Z",
+    assets: [
+      {
+        name: "YTDLPGrab-9.9.9-arm64.dmg",
+        browser_download_url: "https://example.com/YTDLPGrab-9.9.9-arm64.dmg"
+      },
+      {
+        name: "ytdlpgrab-extension-9.9.9.zip",
+        browser_download_url: "https://example.com/ytdlpgrab-extension-9.9.9.zip"
+      }
+    ]
+  };
+
+  const github = http.createServer((req, res) => {
+    if (req.url === "/repos/danialbka/ytdlpgrab/releases/latest") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(releasePayload));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => github.listen(0, "127.0.0.1", resolve));
+  const githubPort = github.address().port;
+
+  try {
+    const outdated = await startFixtureServer({
+      env: {
+        YTDLPGRAB_VERSION: "0.1.6",
+        YTDLPGRAB_GITHUB_API: `http://127.0.0.1:${githubPort}`
+      }
+    });
+    try {
+      const response = await fetch(
+        `${outdated.origin}/update/check`
+      );
+      const update = await response.json();
+      assert.equal(update.ok, true);
+      assert.equal(update.current, "0.1.6");
+      assert.equal(update.latest, "9.9.9");
+      assert.equal(update.updateAvailable, true);
+      assert.equal(update.releaseUrl, releasePayload.html_url);
+      assert.equal(update.assets.dmg, "https://example.com/YTDLPGrab-9.9.9-arm64.dmg");
+      assert.equal(
+        update.assets.extensionZip,
+        "https://example.com/ytdlpgrab-extension-9.9.9.zip"
+      );
+    } finally {
+      await stopFixtureServer(outdated);
+    }
+
+    const current = await startFixtureServer({
+      env: {
+        YTDLPGRAB_VERSION: "9.9.9",
+        YTDLPGRAB_GITHUB_API: `http://127.0.0.1:${githubPort}`
+      }
+    });
+    try {
+      const response = await fetch(`${current.origin}/update/check`);
+      const update = await response.json();
+      assert.equal(update.ok, true);
+      assert.equal(update.updateAvailable, false);
+      assert.equal(update.assets, null);
+    } finally {
+      await stopFixtureServer(current);
+    }
+  } finally {
+    await new Promise((resolve) => github.close(resolve));
   }
 });

@@ -116,8 +116,8 @@ npm run package:release
 This creates:
 
 ```sh
-YTDLPGrab-0.1.6-arm64.dmg
-ytdlpgrab-extension-0.1.6.zip
+YTDLPGrab-0.1.7-arm64.dmg
+ytdlpgrab-extension-0.1.7.zip
 ```
 
 `npm run package:dmg` builds only the DMG. `npm run package:extension` builds only the extension zip.
@@ -144,10 +144,19 @@ The `YT` menu includes:
 - open Desktop
 - open logs
 - open extension folder
+- Check for Updates / Install Update
 - Start at Login toggle
 - quit
 
 If macOS needs approval for Start at Login, check System Settings -> General -> Login Items.
+
+## Auto Updates
+
+Both the macOS app and the browser extension check GitHub releases automatically.
+
+The app checks shortly after launch and then every six hours. When a newer release is found, the `YT` menu shows **Install Update vN.N.N**; choosing it downloads the DMG from the release, replaces the app bundle, and relaunches. You can also trigger this any time with **Check for Updates...**.
+
+The extension checks through the local helper on startup, every six hours, and whenever the popup opens. When an update is available, an **Update available** banner appears at the top of the popup; clicking it opens the release page where you can grab the latest extension ZIP (Chrome does not allow silent updates for unpacked extensions, so reload via `chrome://extensions` after unzipping).
 
 ## Development
 

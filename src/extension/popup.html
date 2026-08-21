@@ -7,6 +7,10 @@
     <link rel="stylesheet" href="popup.css">
   </head>
   <body>
+    <button id="update-banner" class="update-banner" type="button" hidden>
+      <span id="update-banner-label"></span>
+      <span class="update-banner-cta">Get update</span>
+    </button>
     <h1>ytdlpgrab</h1>
     <div class="status">
       <span id="dot" class="dot pending"></span>
@@ -21,6 +25,18 @@
         Open a YouTube video to download what you are watching.
       </p>
       <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+      <div id="download-progress" class="download-progress" hidden>
+        <div
+          id="progress-bar"
+          class="progress-bar"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+        >
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <p id="progress-label" class="progress-label"></p>
+      </div>
     </section>
     <script src="popup.js"></script>
   </body>

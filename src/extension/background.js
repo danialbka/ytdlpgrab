@@ -3,6 +3,9 @@
   const TRUSTED_ACTION_HEADER = "x-ytdlpgrab-extension";
   const TRUSTED_ACTION_VALUE = "1";
   const FETCH_TIMEOUT_MS = 30000;
+  const UPDATE_CHECK_ALARM = "ytdlpgrab-update-check";
+  const UPDATE_CHECK_PERIOD_MINUTES = 360;
+  const UPDATE_STORAGE_KEY = "updateCheck";
   const ALLOWED_PAGE_HOSTS = new Set([
     "youtube.com",
     "www.youtube.com",
@@ -163,6 +166,90 @@
     });
   }
 
+  async function prepareHelperDownload(video) {
+    const ac = new AbortController();
+    const timeoutId = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(helperUrl("/prepare", video.videoUrl, video.name), {
+        method: "POST",
+        headers: {
+          [TRUSTED_ACTION_HEADER]: TRUSTED_ACTION_VALUE
+        },
+        signal: ac.signal
+      });
+
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.ok) {
+        throw new Error(body.error || `Helper returned ${response.status}.`);
+      }
+
+      return body;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  function applyUpdateBadge(updateAvailable) {
+    try {
+      chrome.action.setBadgeText({ text: updateAvailable ? "!" : "" });
+      chrome.action.setBadgeBackgroundColor({ color: "#ff0033" });
+    } catch {
+      // Badge is cosmetic; ignore unsupported action API states.
+    }
+  }
+
+  async function checkForUpdates() {
+    const ac = new AbortController();
+    const timeoutId = setTimeout(() => ac.abort(), 10000);
+    let result;
+    try {
+      const response = await fetch(new URL("/update/check", HELPER_ORIGIN), {
+        signal: ac.signal
+      });
+      result = await response.json().catch(() => null);
+    } catch (error) {
+      result = { ok: false, error: error.message };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    if (result) {
+      await chrome.storage.local.set({
+        [UPDATE_STORAGE_KEY]: { checkedAt: Date.now(), result }
+      });
+      applyUpdateBadge(result.ok === true && result.updateAvailable === true);
+    }
+
+    return result;
+  }
+
+  async function storedUpdateCheck() {
+    const stored = await chrome.storage.local.get(UPDATE_STORAGE_KEY);
+    return stored?.[UPDATE_STORAGE_KEY]?.result || null;
+  }
+
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === UPDATE_CHECK_ALARM) {
+      checkForUpdates();
+    }
+  });
+
+  chrome.runtime.onInstalled.addListener(() => {
+    chrome.alarms.create(UPDATE_CHECK_ALARM, {
+      delayInMinutes: 1,
+      periodInMinutes: UPDATE_CHECK_PERIOD_MINUTES
+    });
+    checkForUpdates();
+  });
+
+  chrome.runtime.onStartup.addListener(() => {
+    chrome.alarms.create(UPDATE_CHECK_ALARM, {
+      delayInMinutes: 1,
+      periodInMinutes: UPDATE_CHECK_PERIOD_MINUTES
+    });
+    checkForUpdates();
+  });
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || typeof message !== "object") {
       return false;
@@ -183,8 +270,13 @@
             return { ok: true, video };
           }
 
-          const downloadId = await startBrowserDownload(video);
-          return { ok: true, video, downloadId };
+          const prepare = await prepareHelperDownload(video);
+          return {
+            ok: true,
+            video,
+            cached: Boolean(prepare.cached),
+            active: Boolean(prepare.active)
+          };
         })
         .then((response) => {
           try {
@@ -197,6 +289,49 @@
           } catch {}
         });
 
+      return true;
+    }
+
+    if (message.type === "ytdlpgrab.start-browser-download") {
+      if (!isExtensionPageSender(sender)) {
+        sendResponse({ ok: false, error: "Untrusted extension page." });
+        return false;
+      }
+
+      const videoUrl = normalizeVideoUrl(message.videoUrl);
+      if (!videoUrl) {
+        sendResponse({ ok: false, error: "Invalid or missing video URL in message." });
+        return false;
+      }
+
+      const name = String(message.name || "youtube-video").slice(0, 300);
+      startBrowserDownload({ videoUrl, name })
+        .then((downloadId) => {
+          try {
+            sendResponse({ ok: true, downloadId });
+          } catch {}
+        })
+        .catch((error) => {
+          try {
+            sendResponse({ ok: false, error: error.message });
+          } catch {}
+        });
+
+      return true;
+    }
+
+    if (message.type === "ytdlpgrab.update-check") {
+      if (!isExtensionPageSender(sender)) {
+        sendResponse({ ok: false, error: "Untrusted extension page." });
+        return false;
+      }
+
+      checkForUpdates()
+        .then((result) => {
+          try {
+            sendResponse({ ok: true, update: result });
+          } catch {}
+        });
       return true;
     }
 
@@ -226,7 +361,4 @@
 
     return true;
   });
-
-  chrome.runtime.onInstalled.addListener(() => {});
-  chrome.runtime.onStartup.addListener(() => {});
 })();

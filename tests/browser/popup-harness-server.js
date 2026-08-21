@@ -7,18 +7,81 @@ const extensionRoot = path.join(root, "src", "extension");
 const port = Number(process.env.YTDLPGRAB_POPUP_HARNESS_PORT || 8767);
 
 const mockRuntime = `
-globalThis.__ytdlpgrabHarness = { messages: [] };
-globalThis.fetch = async () => ({
-  ok: true,
-  status: 200,
-  async json() {
-    return {
+globalThis.__ytdlpgrabHarness = { messages: [], downloadItem: null };
+const listeners = [];
+let progressStep = 0;
+
+function jsonResponse(body) {
+  return {
+    ok: true,
+    status: 200,
+    async json() {
+      return body;
+    }
+  };
+}
+
+globalThis.fetch = async (url) => {
+  const target = String(url);
+  if (target.includes("/progress")) {
+    progressStep += 1;
+    if (progressStep <= 3) {
+      return jsonResponse({
+        ok: true,
+        cacheKey: "fixture-key",
+        cached: false,
+        active: true,
+        percent: progressStep * 25,
+        bytesSoFar: progressStep * 2500000,
+        totalBytes: 10000000
+      });
+    }
+    return jsonResponse({
       ok: true,
-      mode: { label: "YouTube Video" },
-      tools: { ytDlp: { available: true, version: "2026.fixture" } }
-    };
+      cacheKey: "fixture-key",
+      cached: true,
+      active: false,
+      percent: 100,
+      bytesSoFar: 10000000,
+      totalBytes: 10000000
+    });
   }
-});
+  return jsonResponse({
+    ok: true,
+    mode: { label: "YouTube Video" },
+    tools: { ytDlp: { available: true, version: "2026.fixture" } }
+  });
+};
+
+function emitChanged(delta) {
+  for (const listener of [...listeners]) {
+    listener(delta);
+  }
+}
+
+function simulateBrowserDownload() {
+  const item = {
+    id: 42,
+    state: "in_progress",
+    bytesReceived: 0,
+    totalBytes: 10000000
+  };
+  globalThis.__ytdlpgrabHarness.downloadItem = item;
+
+  [1500000, 4200000, 7300000, 9100000].forEach((bytes, index) => {
+    setTimeout(() => {
+      item.bytesReceived = bytes;
+      emitChanged({ id: 42 });
+    }, 350 * (index + 1));
+  });
+
+  setTimeout(() => {
+    item.state = "complete";
+    item.bytesReceived = 10000000;
+    emitChanged({ id: 42, state: { current: "complete" } });
+  }, 1900);
+}
+
 globalThis.chrome = {
   runtime: {
     lastError: null,
@@ -34,13 +97,44 @@ globalThis.chrome = {
           return;
         }
         if (message.type === "ytdlpgrab.save-current-video") {
+          callback({ ok: true, video, cached: false, active: true });
+          return;
+        }
+        if (message.type === "ytdlpgrab.update-check") {
           callback({
             ok: true,
-            video,
-            downloadId: 42
+            update: {
+              ok: true,
+              current: "0.1.7",
+              latest: "0.1.8",
+              updateAvailable: true,
+              releaseUrl:
+                "https://github.com/danialbka/ytdlpgrab/releases/latest"
+            }
           });
+          return;
+        }
+        if (message.type === "ytdlpgrab.start-browser-download") {
+          callback({ ok: true, downloadId: 42 });
+          simulateBrowserDownload();
         }
       }, 40);
+    }
+  },
+  downloads: {
+    onChanged: {
+      addListener(listener) {
+        listeners.push(listener);
+      },
+      hasListener(listener) {
+        return listeners.includes(listener);
+      }
+    },
+    search(query, callback) {
+      const item = globalThis.__ytdlpgrabHarness.downloadItem;
+      setTimeout(() => {
+        callback(!query.id || query.id === item?.id ? (item ? [item] : []) : []);
+      }, 10);
     }
   }
 };

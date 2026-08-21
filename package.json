@@ -1,7 +1,7 @@
 {
   "name": "ytdlpgrab",
-  "version": "0.1.6",
-  "buildNumber": 7,
+  "version": "0.1.7",
+  "buildNumber": 8,
   "description": "Drag YouTube thumbnails or titles out of Chrome and let a local helper save video or audio files.",
   "license": "MIT",
   "repository": {

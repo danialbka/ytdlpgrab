@@ -71,10 +71,20 @@ const DOWNLOAD_MODE_OPTIONS = new Map([
 ]);
 const QUALITY = qualityFromValue(process.env.YTDLPGRAB_QUALITY);
 const DOWNLOAD_MODE = modeFromValue(process.env.YTDLPGRAB_MODE);
+const GITHUB_API_BASE =
+  process.env.YTDLPGRAB_GITHUB_API || "https://api.github.com";
+const RELEASES_REPO = process.env.YTDLPGRAB_RELEASES_REPO || "danialbka/ytdlpgrab";
+const UPDATE_CHECK_TTL_MS = positiveIntegerFromValue(
+  process.env.YTDLPGRAB_UPDATE_CHECK_TTL_MS,
+  10 * 60 * 1000
+);
+const UPDATE_HTTP_TIMEOUT_MS = 10 * 1000;
 
 const jobs = new Map();
 const saveJobs = new Map();
 const progressListeners = new Map();
+const latestProgress = new Map();
+let updateCheckCache = { checkedAt: 0, value: null };
 const downloadQueue = [];
 let activeDownloads = 0;
 const toolCache = {
@@ -806,6 +816,8 @@ function parseYtDlpProgressLine(line) {
 }
 
 function emitDownloadProgress(key, progress) {
+  latestProgress.set(key, progress);
+
   const listeners = progressListeners.get(key);
   if (!listeners) {
     return;
@@ -989,6 +1001,7 @@ async function ensureDownloaded(videoUrl) {
   const job = runWithDownloadSlot(() => downloadWithYtDlp(videoUrl, key))
     .finally(() => {
       jobs.delete(key);
+      latestProgress.delete(key);
     });
 
   jobs.set(key, job);
@@ -1112,11 +1125,23 @@ async function streamDownload(req, res, query) {
 
   const download = ensureDownloaded(videoUrl);
 
-  res.writeHead(200, {
+  const headers = {
     "content-type": modeOption.contentType,
     "content-disposition": contentDisposition(filename),
     "cache-control": "private, max-age=31536000"
-  });
+  };
+
+  const key = cacheKeyFor(videoUrl);
+  const cachedPath = cachedPathFor(key);
+  if (fs.existsSync(cachedPath)) {
+    try {
+      headers["content-length"] = fs.statSync(cachedPath).size;
+    } catch {
+      // Size is best-effort; chunked transfer still works without it.
+    }
+  }
+
+  res.writeHead(200, headers);
   res.flushHeaders();
 
   try {
@@ -1160,6 +1185,182 @@ async function prepareDownload(res, query) {
     cached: fs.existsSync(targetPath),
     active: jobs.has(key)
   });
+}
+
+function resolveOwnVersion() {
+  if (process.env.YTDLPGRAB_VERSION) {
+    return process.env.YTDLPGRAB_VERSION;
+  }
+
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")
+    );
+    if (typeof pkg.version === "string" && pkg.version) {
+      return pkg.version;
+    }
+  } catch {
+    // Not running from a checkout; fall through to the bundled stamp.
+  }
+
+  try {
+    return fs
+      .readFileSync(path.join(PROJECT_ROOT, "version"), "utf8")
+      .trim();
+  } catch {
+    return "0.0.0";
+  }
+}
+
+function parseVersionParts(value) {
+  const match = String(value || "").match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) {
+    return null;
+  }
+
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function isNewerVersion(candidate, current) {
+  const candidateParts = parseVersionParts(candidate);
+  const currentParts = parseVersionParts(current);
+  if (!candidateParts || !currentParts) {
+    return false;
+  }
+
+  for (let index = 0; index < 3; index += 1) {
+    if (candidateParts[index] !== currentParts[index]) {
+      return candidateParts[index] > currentParts[index];
+    }
+  }
+
+  return false;
+}
+
+function normalizeTagName(tagName) {
+  return String(tagName || "").replace(/^v/i, "");
+}
+
+function assetUrlsFor(release, version) {
+  const assets = Array.isArray(release?.assets) ? release.assets : [];
+  const findAsset = (pattern) => {
+    const match = assets.find((asset) => pattern.test(asset?.name || ""));
+    return match?.browser_download_url || null;
+  };
+
+  const escapedVersion = String(version).replace(/\./g, "\\.");
+  return {
+    dmg: findAsset(new RegExp(`YTDLPGrab-${escapedVersion}-.*\\.dmg$`, "i")),
+    extensionZip: findAsset(
+      new RegExp(`ytdlpgrab-extension-${escapedVersion}\\.zip$`, "i")
+    )
+  };
+}
+
+async function fetchLatestRelease() {
+  const url = `${GITHUB_API_BASE}/repos/${RELEASES_REPO}/releases/latest`;
+  const response = await fetch(url, {
+    headers: {
+      accept: "application/vnd.github+json",
+      "user-agent": "ytdlpgrab-helper",
+      "x-github-api-version": "2022-11-28"
+    },
+    signal: AbortSignal.timeout(UPDATE_HTTP_TIMEOUT_MS)
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub returned ${response.status}.`);
+  }
+
+  return response.json();
+}
+
+async function checkForUpdate() {
+  const now = Date.now();
+  if (updateCheckCache.value && now - updateCheckCache.checkedAt < UPDATE_CHECK_TTL_MS) {
+    return updateCheckCache.value;
+  }
+
+  const current = resolveOwnVersion();
+  let result;
+  try {
+    const release = await fetchLatestRelease();
+    const latest = normalizeTagName(release?.tag_name);
+    const updateAvailable = isNewerVersion(latest, current);
+    result = {
+      ok: true,
+      current,
+      latest,
+      updateAvailable,
+      releaseUrl: release?.html_url || null,
+      publishedAt: release?.published_at || null,
+      assets: updateAvailable ? assetUrlsFor(release, latest) : null
+    };
+  } catch (error) {
+    result = {
+      ok: false,
+      current,
+      error: error.message
+    };
+  }
+
+  updateCheckCache = { checkedAt: now, value: result };
+  return result;
+}
+
+function progressResponseFor(videoUrl) {
+  const key = cacheKeyFor(videoUrl);
+  const targetPath = cachedPathFor(key);
+  const cached = fs.existsSync(targetPath);
+  const active = jobs.has(key);
+  const progress = latestProgress.get(key);
+
+  if (cached) {
+    let totalBytes = 0;
+    try {
+      totalBytes = fs.statSync(targetPath).size;
+    } catch {
+      totalBytes = 0;
+    }
+
+    return {
+      ok: true,
+      cacheKey: key,
+      cached: true,
+      active,
+      percent: 100,
+      bytesSoFar: totalBytes,
+      totalBytes
+    };
+  }
+
+  const bytesSoFar = Math.max(0, Math.floor(progress?.bytesSoFar || 0));
+  const totalBytes = Math.max(0, Math.floor(progress?.totalBytes || 0));
+  const percent = totalBytes
+    ? Math.min(100, Math.round((bytesSoFar / totalBytes) * 100))
+    : null;
+
+  return {
+    ok: true,
+    cacheKey: key,
+    cached: false,
+    active,
+    percent,
+    bytesSoFar,
+    totalBytes
+  };
+}
+
+async function progressDownload(res, query) {
+  let videoUrl;
+  try {
+    videoUrl = parseRequestedUrl(query.get("url"));
+  } catch (error) {
+    sendError(res, 400, error.message);
+    return;
+  }
+
+  sendJson(res, 200, progressResponseFor(videoUrl));
 }
 
 async function saveDownload(res, query) {
@@ -1265,6 +1466,16 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/health") {
       sendJson(res, 200, health());
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/progress") {
+      await progressDownload(res, url.searchParams);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/update/check") {
+      sendJson(res, 200, await checkForUpdate());
       return;
     }
 

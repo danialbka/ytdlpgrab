@@ -23,11 +23,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var outputHandle: FileHandle?
     private var errorHandle: FileHandle?
     private var healthTimer: Timer?
+    private var updateTimer: Timer?
     private var isHealthy = false
     private var healthSummary = "Checking..."
     private var toolSummary = ""
     private var lastError: String?
     private var restartAfterStop = false
+    private var isCheckingUpdate = false
+    private var isInstallingUpdate = false
+    private var updateStatusLine: String?
+    private var pendingUpdate: UpdateCheck?
+
+    private var helperBaseURL: URL {
+        URL(string: "http://127.0.0.1:17427")!
+    }
 
     private var helperURL: URL {
         URL(string: "http://127.0.0.1:17427/health")!
@@ -97,10 +106,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         healthTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.refreshHealth()
         }
+        perform(#selector(autoCheckForUpdates), with: nil, afterDelay: 20.0)
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60.0, repeats: true) { [weak self] _ in
+            self?.checkForUpdates(showResult: false)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         healthTimer?.invalidate()
+        updateTimer?.invalidate()
         stopServer()
     }
 
@@ -268,9 +282,278 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func installUpdateAction() {
+        installPendingUpdate()
+    }
+
+    @objc private func openReleaseNotes(_ sender: NSMenuItem) {
+        guard
+            let releaseUrl = sender.representedObject as? String,
+            let url = URL(string: releaseUrl)
+        else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
     @objc private func quitApp() {
         stopServer()
         NSApp.terminate(nil)
+    }
+
+    @objc private func autoCheckForUpdates() {
+        checkForUpdates(showResult: false)
+    }
+
+    @objc private func checkForUpdatesManually() {
+        checkForUpdates(showResult: true)
+    }
+
+    private func checkForUpdates(showResult: Bool) {
+        guard !isInstallingUpdate else { return }
+
+        isCheckingUpdate = true
+        updateStatusLine = "Checking for updates..."
+        rebuildMenu()
+
+        var request = URLRequest(url: helperBaseURL.appendingPathComponent("update/check"))
+        request.timeoutInterval = 20
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isCheckingUpdate = false
+                self.updateStatusLine = nil
+
+                if let error {
+                    self.pendingUpdate = nil
+                    self.updateStatusLine = "Update check failed."
+                    self.appendDiagnostic("update check failed: \(error.localizedDescription)")
+                    self.rebuildMenu()
+                    if showResult {
+                        self.presentAlert(
+                            title: "Update Check Failed",
+                            message: "Could not reach the update service.\n\(error.localizedDescription)"
+                        )
+                    }
+                    return
+                }
+
+                guard
+                    let data,
+                    let check = try? JSONDecoder().decode(UpdateCheck.self, from: data),
+                    check.ok
+                else {
+                    self.updateStatusLine = "Update check unavailable."
+                    self.rebuildMenu()
+                    if showResult {
+                        self.presentAlert(
+                            title: "Update Check Unavailable",
+                            message: "The helper could not fetch release information. Try again later."
+                        )
+                    }
+                    return
+                }
+
+                if check.updateAvailable == true, let latest = check.latest {
+                    self.pendingUpdate = check
+                    self.updateStatusLine = "Version v\(latest) is available."
+                    self.rebuildMenu()
+                    if showResult {
+                        self.offerPendingInstall()
+                    }
+                } else {
+                    self.pendingUpdate = nil
+                    let current = check.current ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+                    self.updateStatusLine = "Up to date (v\(current))."
+                    self.rebuildMenu()
+                    if showResult {
+                        self.presentAlert(
+                            title: "You're Up to Date",
+                            message: "YTDLPGrab v\(current) is the latest version."
+                        )
+                    }
+                }
+            }
+        }.resume()
+    }
+
+    private func offerPendingInstall() {
+        guard let update = pendingUpdate, let latest = update.latest else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Update Available"
+        alert.informativeText = "YTDLPGrab v\(latest) is available. You are running v\(update.current ?? "?").\n\nInstall it now? The app will download the DMG, replace itself, and relaunch."
+        alert.addButton(withTitle: "Install and Relaunch")
+        alert.addButton(withTitle: "Later")
+        alert.alertStyle = .informational
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            installPendingUpdate()
+        }
+    }
+
+    private func installPendingUpdate() {
+        guard
+            !isInstallingUpdate,
+            let dmgURLString = pendingUpdate?.assets?.dmg,
+            let dmgURL = URL(string: dmgURLString)
+        else {
+            if let releaseUrl = pendingUpdate?.releaseUrl, let url = URL(string: releaseUrl) {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
+
+        isInstallingUpdate = true
+        updateStatusLine = "Downloading update..."
+        rebuildMenu()
+        appendDiagnostic("downloading update from \(dmgURLString)")
+
+        let task = URLSession.shared.downloadTask(with: dmgURL) { [weak self] location, response, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+
+                guard let location, error == nil,
+                      let http = response as? HTTPURLResponse, http.statusCode == 200
+                else {
+                    self.isInstallingUpdate = false
+                    self.updateStatusLine = "Update download failed."
+                    self.rebuildMenu()
+                    self.appendDiagnostic("update download failed: \(error?.localizedDescription ?? "HTTP error")")
+                    return
+                }
+
+                let destination = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("YTDLPGrab-update-\(UUID().uuidString).dmg")
+                do {
+                    try? FileManager.default.removeItem(at: destination)
+                    try FileManager.default.moveItem(at: location, to: destination)
+                } catch {
+                    self.isInstallingUpdate = false
+                    self.updateStatusLine = "Update download failed."
+                    self.rebuildMenu()
+                    self.appendDiagnostic("failed to stage update: \(error.localizedDescription)")
+                    return
+                }
+
+                self.updateStatusLine = "Installing update..."
+                self.rebuildMenu()
+
+                DispatchQueue.global(qos: .userInitiated).async {
+                    self.applyUpdate(dmgPath: destination.path)
+                }
+            }
+        }
+        task.resume()
+    }
+
+    private func applyUpdate(dmgPath: String) {
+        let fileManager = FileManager.default
+
+        func fail(_ message: String, mountPoint: String? = nil) {
+            if let mountPoint {
+                _ = runTool("/usr/bin/hdiutil", ["detach", "-quiet", "-force", mountPoint])
+            }
+            appendDiagnostic(message)
+            DispatchQueue.main.async {
+                self.isInstallingUpdate = false
+                self.updateStatusLine = "Update install failed."
+                self.rebuildMenu()
+                self.presentAlert(title: "Update Failed", message: message)
+            }
+        }
+
+        guard
+            let attachOutput = runTool("/usr/bin/hdiutil", [
+                "attach", "-nobrowse", "-readonly", dmgPath
+            ]),
+            let mountPoint = findMountPoint(in: attachOutput)
+        else {
+            fail("Could not mount the update disk image.")
+            return
+        }
+
+        let sourceApp = URL(fileURLWithPath: mountPoint)
+            .appendingPathComponent("YTDLPGrab.app", isDirectory: true)
+        guard fileManager.fileExists(atPath: sourceApp.path) else {
+            fail("The downloaded image did not contain YTDLPGrab.app.", mountPoint: mountPoint)
+            return
+        }
+
+        let currentBundle = Bundle.main.bundleURL
+        let destinationApp = currentBundle.deletingLastPathComponent()
+            .appendingPathComponent("YTDLPGrab.app", isDirectory: true)
+
+        do {
+            if fileManager.fileExists(atPath: destinationApp.path) {
+                try fileManager.removeItem(at: destinationApp)
+            }
+            try fileManager.copyItem(at: sourceApp, to: destinationApp)
+        } catch {
+            fail("Could not replace the app bundle.\n\(error.localizedDescription)", mountPoint: mountPoint)
+            return
+        }
+
+        _ = runTool("/usr/bin/hdiutil", ["detach", "-quiet", mountPoint])
+        try? fileManager.removeItem(atPath: dmgPath)
+        appendDiagnostic("installed update at \(destinationApp.path); relaunching")
+
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = [
+            "-c",
+            "sleep 2 && open \"\(destinationApp.path)\""
+        ]
+        try? relaunch.run()
+
+        DispatchQueue.main.async {
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func runTool(_ launchPath: String, _ arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: launchPath)
+        process.arguments = arguments
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                return nil
+            }
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+
+    private func findMountPoint(in hdiutilOutput: String) -> String? {
+        let lines = hdiutilOutput.split(separator: "\n").map(String.init)
+        guard let lastNonEmpty = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else {
+            return nil
+        }
+
+        let columns = lastNonEmpty.components(separatedBy: "\t")
+        guard let candidate = columns.last?.trimmingCharacters(in: .whitespaces), candidate.hasPrefix("/Volumes/") else {
+            return nil
+        }
+
+        return candidate
+    }
+
+    private func presentAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.runModal()
     }
 
     private func refreshHealth() {
@@ -399,6 +682,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        if let pendingUpdate, let latest = pendingUpdate.latest {
+            let installItem = NSMenuItem(
+                title: isInstallingUpdate ? "Installing Update..." : "Install Update v\(latest)",
+                action: isInstallingUpdate ? nil : #selector(installUpdateAction),
+                keyEquivalent: ""
+            )
+            installItem.target = self
+            menu.addItem(installItem)
+
+            if let releaseUrl = pendingUpdate.releaseUrl {
+                let notes = NSMenuItem(
+                    title: "Release Notes",
+                    action: #selector(openReleaseNotes),
+                    keyEquivalent: ""
+                )
+                notes.target = self
+                notes.representedObject = releaseUrl
+                menu.addItem(notes)
+            }
+        } else {
+            let checkTitle = isCheckingUpdate
+                ? (updateStatusLine ?? "Checking for Updates...")
+                : "Check for Updates..."
+            let checkItem = NSMenuItem(
+                title: checkTitle,
+                action: isCheckingUpdate ? nil : #selector(checkForUpdatesManually),
+                keyEquivalent: ""
+            )
+            checkItem.target = self
+            menu.addItem(checkItem)
+        }
+
+        menu.addItem(.separator())
+
         let loginItem = NSMenuItem(
             title: "Start at Login",
             action: #selector(toggleStartAtLogin),
@@ -519,4 +836,18 @@ private struct Tools: Decodable {
 private struct ToolStatus: Decodable {
     let available: Bool
     let version: String?
+}
+
+private struct UpdateCheck: Decodable {
+    let ok: Bool
+    let current: String?
+    let latest: String?
+    let updateAvailable: Bool?
+    let releaseUrl: String?
+    let assets: UpdateAssets?
+}
+
+private struct UpdateAssets: Decodable {
+    let dmg: String?
+    let extensionZip: String?
 }
